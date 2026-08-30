@@ -56,12 +56,12 @@ async def call_openrouter(
     temperature: float = 0.4,
 ) -> str:
     """
-    Returns plain text content from the model. Keeps max_tokens modest by
-    default — summaries don't need to be long to be useful, and shorter
-    completions are kinder to a free-tier budget.
+    Tries settings.openrouter_models_chain in order (primary, then each
+    fallback) — if a model 404s (deprecated/no longer free), rate-limits,
+    or otherwise errors, the next model in the chain is tried before
+    giving up.
     """
-    payload = {
-        "model": settings.openrouter_model,
+    payload_base = {
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -69,8 +69,16 @@ async def call_openrouter(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    data = await _post_chat_completion(payload)
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError) as exc:
-        raise LLMRequestError(f"Unexpected OpenRouter response shape: {data}") from exc
+
+    last_error: Exception | None = None
+    for model in settings.openrouter_models_chain:
+        try:
+            data = await _post_chat_completion({**payload_base, "model": model})
+            return data["choices"][0]["message"]["content"].strip()
+        except (LLMRequestError, KeyError, IndexError) as exc:
+            last_error = exc
+            continue  # try the next model in the chain
+
+    raise LLMRequestError(
+        f"All configured OpenRouter models failed. Last error: {last_error}"
+    ) from last_error

@@ -10,6 +10,8 @@ from app.config import settings
 PAPERS_TABLE = "papers"
 SUMMARIES_TABLE = "summaries"
 ANALYSIS_TABLE = "analysis"
+FIGURES_TABLE = "figures"
+FIGURES_BUCKET = "paper-figures"
 CHAT_MESSAGES_TABLE = "chat_messages"
 
 

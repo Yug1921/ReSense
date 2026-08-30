@@ -51,7 +51,9 @@ _SYSTEM_PROMPTS = {
 
 _STRUCTURE_INSTRUCTION = (
     "Structure your response with these labeled parts, each 2-4 sentences "
-    "unless noted:\n"
+    "unless noted, and keep the ENTIRE response under 300 words total — "
+    "stay within that budget rather than running long, since the response "
+    "will be cut off if it exceeds it:\n"
     "1. What it's about\n"
     "2. Why it matters\n"
     "3. Method in brief\n"

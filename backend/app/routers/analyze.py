@@ -12,6 +12,7 @@ from app.db.supabase_client import get_supabase, PAPERS_TABLE, ANALYSIS_TABLE
 from app.models.schemas import AnalyzeRequest, AnalyzeResponse, Classification
 from app.services.analysis import section_length_stats, keyword_frequency, classify_paper
 
+
 router = APIRouter(tags=["analyze"])
 
 

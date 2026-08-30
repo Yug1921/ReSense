@@ -10,7 +10,7 @@ losing it.
 """
 from fastapi import APIRouter, HTTPException
 
-from app.db.supabase_client import get_supabase, PAPERS_TABLE, CHAT_MESSAGES_TABLE
+from app.db.supabase_client import get_supabase, PAPERS_TABLE, CHAT_MESSAGES_TABLE, FIGURES_TABLE
 from app.models.schemas import AskRequest, AskResponse
 from app.services.chunking import chunk_paper
 from app.services.retrieval import retrieve_relevant_chunks
@@ -61,7 +61,7 @@ async def ask_paper(req: AskRequest) -> AskResponse:
     # DB gave us newest-first; flip back to chronological order for the prompt.
     chat_history = list(reversed(history_result.data))
 
-    chunks = chunk_paper(paper["raw_text"], paper.get("structure_json"))
+    chunks = chunk_paper(paper["raw_text"], paper.get("structure_json"), figures=_fetch_captioned_figures(supabase, req.paper_id))
     relevant_chunks = retrieve_relevant_chunks(question, chunks, top_k=_TOP_K_CHUNKS)
 
     system_prompt, user_prompt = build_ask_prompt(question, relevant_chunks, chat_history)
@@ -85,3 +85,16 @@ async def ask_paper(req: AskRequest) -> AskResponse:
 
     used_sections = sorted({c["section"] for c in relevant_chunks})
     return AskResponse(paper_id=req.paper_id, answer=answer, used_sections=used_sections)
+
+def _fetch_captioned_figures(supabase, paper_id: str) -> list[dict]:
+    """Only figures that already have a caption are useful as retrieval
+    context — an uncaptioned figure (never run through /figures yet) has
+    nothing to search over."""
+    result = (
+        supabase.table(FIGURES_TABLE)
+        .select("page_number, image_type, caption")
+        .eq("paper_id", paper_id)
+        .not_.is_("caption", "null")
+        .execute()
+    )
+    return result.data

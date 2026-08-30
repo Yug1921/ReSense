@@ -9,7 +9,7 @@ re-touches the raw file.
 from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from app.config import settings
-from app.db.supabase_client import get_supabase, PAPERS_TABLE
+from app.db.supabase_client import get_supabase, PAPERS_TABLE, FIGURES_TABLE
 from app.models.schemas import UploadResponse
 from app.services.parser import (
     parse_file,
@@ -17,6 +17,8 @@ from app.services.parser import (
     UnsupportedFileTypeError,
     FileParsingError,
 )
+from app.services.figure_extraction import extract_images_from_pdf, ImageExtractionError
+from app.services.figure_storage import upload_figure_image
 
 router = APIRouter(tags=["upload"])
 
@@ -103,7 +105,8 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
         .execute()
     )
     row = insert_result.data[0]
-
+    if parsed.status == "ready" and filename.lower().endswith(".pdf"):
+                _extract_and_store_figures(supabase, paper_id=row["id"], file_bytes=file_bytes)
     message = None
     if parsed.status == "empty_text":
         message = (
@@ -118,3 +121,34 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
         structure=parsed.structure,
         message=message,
     )
+
+def _extract_and_store_figures(supabase, paper_id: str, file_bytes: bytes) -> None:
+    """
+    Pulls embedded images out of the PDF and stores them (bytes only —
+    no captioning here, that's the vision model's job in /figures,
+    called on demand so uploading never costs a vision-model call).
+    Never raises: figure extraction is a bonus feature and must not
+    block a successful upload if it fails for any reason (e.g. the
+    Storage bucket isn't set up yet).
+    """
+    try:
+        images = extract_images_from_pdf(file_bytes)
+    except ImageExtractionError:
+        return
+
+    for index, img in enumerate(images):
+        try:
+            storage_path = upload_figure_image(
+                paper_id, img["page_number"], index, img["image_bytes"], img["extension"]
+            )
+            supabase.table(FIGURES_TABLE).insert(
+                {
+                    "paper_id": paper_id,
+                    "page_number": img["page_number"],
+                    "storage_path": storage_path,
+                    "width": img["width"],
+                    "height": img["height"],
+                }
+            ).execute()
+        except Exception:
+            continue  # one bad image shouldn't sink the rest

@@ -82,3 +82,48 @@ class AnalyzeResponse(BaseModel):
     cached: bool = Field(
         description="True if served from the analysis cache, False if just computed."
     )
+
+# --- Track I: session aggregate -----------------------------------------
+
+class PaperInfo(BaseModel):
+    paper_id: str
+    filename: str
+    status: PaperStatus
+    structure: dict
+
+
+class SessionResponse(BaseModel):
+    """
+    Everything the frontend needs to fully restore a paper's state after
+    a reload — one call instead of re-fetching upload/summarize/analyze/
+    ask results piecemeal. Nothing here triggers new LLM generation; it
+    only reads what's already cached in Supabase.
+    """
+    paper: PaperInfo
+    summaries: dict[str, str] = Field(
+        default_factory=dict, description="tone -> cached summary content, only tones already generated"
+    )
+    analysis: Optional[AnalyzeResponse] = None
+    chat_history: list[ChatTurn] = Field(default_factory=list)
+
+# --- Track J: figures (vision) -------------------------------------------
+
+ImageType = Literal["chart", "diagram", "table", "code", "photo", "other"]
+
+
+class Figure(BaseModel):
+    id: str
+    paper_id: str
+    page_number: int
+    image_type: Optional[ImageType] = None
+    caption: Optional[str] = None
+    width: int
+    height: int
+
+
+class FiguresResponse(BaseModel):
+    paper_id: str
+    figures: list[Figure]
+    cached: bool = Field(
+        description="True if every figure already had a caption; False if at least one was just captioned."
+    )

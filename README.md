@@ -23,7 +23,7 @@ implemented in `backend/`.
 
 ```bash
 cd backend
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source venv/bin/activate .\venv\Scripts\Activate.ps1    
 pip install -r requirements.txt
 cp .env.example .env   # fill in SUPABASE_URL, SUPABASE_KEY, OPENROUTER_API_KEY
 # run the schema.sql against your Supabase project (SQL editor or psql) before first use

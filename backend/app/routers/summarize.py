@@ -58,7 +58,7 @@ async def summarize_paper(req: SummarizeRequest) -> SummarizeResponse:
     system_prompt, user_prompt = build_summary_prompt(req.tone, paper["raw_text"])
 
     try:
-        content = await call_openrouter(system_prompt, user_prompt)
+        content = await call_openrouter(system_prompt, user_prompt, max_tokens=1200)
     except LLMRateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except LLMRequestError as exc:

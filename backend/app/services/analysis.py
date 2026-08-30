@@ -10,7 +10,7 @@ import json
 import re
 from collections import Counter
 
-from app.services.llm import call_openrouter, LLMRequestError
+from app.services.llm import call_openrouter
 from app.services.prompts import build_classification_prompt
 
 _STOPWORDS = {
@@ -45,8 +45,8 @@ def keyword_frequency(raw_text: str, top_n: int = 15) -> list[dict]:
 
 
 async def classify_paper(raw_text: str) -> dict | None:
-    """Returns None (rather than raising) on LLM failure — analysis should
-    still return the two free, computed charts even if this one call fails."""
+    """Returns None (rather than raising) on ANY failure here — network blips, OpenRouter errors, malformed JSON, whatever. Classification is a nice-to-have; the two computed charts (section lengths, keywords) must never be taken down by it."""
+
     system_prompt, user_prompt = build_classification_prompt(raw_text)
     try:
         raw_response = await call_openrouter(system_prompt, user_prompt, max_tokens=100, temperature=0.1)

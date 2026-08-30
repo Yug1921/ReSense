@@ -33,3 +33,8 @@ frontend/.next/
 # OS
 .DS_Store
 Thumbs.db
+
+# Environment files and sensitive information
+.env
+.env.*
+Password_info.txt
