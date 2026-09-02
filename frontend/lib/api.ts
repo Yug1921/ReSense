@@ -19,6 +19,21 @@ export interface UploadResponse {
   reused_existing: boolean;
 }
 
+export type Tone = "simple" | "technical" | "connect";
+
+export const TONES: ReadonlyArray<{ id: Tone; label: string; description: string }> = [
+  { id: "simple", label: "Simple", description: "A clear explanation without specialist jargon." },
+  { id: "technical", label: "Technical", description: "Detailed language for a research-focused read." },
+  { id: "connect", label: "Connect", description: "The main ideas linked to broader context and implications." },
+];
+
+export interface SummarizeResponse {
+  paper_id: string;
+  tone: Tone;
+  content: string;
+  cached: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -26,6 +41,33 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
   }
+}
+
+export async function summarizePaper(
+  paperId: string,
+  tone: Tone
+): Promise<SummarizeResponse> {
+  const response = await fetch(`${API_BASE_URL}/summarize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paper_id: paperId, tone }),
+  });
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+
+  if (!response.ok) {
+    const detail =
+      (body as { detail?: string } | null)?.detail ??
+      "Summary generation failed — the server didn't return a readable error.";
+    throw new ApiError(detail, response.status);
+  }
+
+  return body as SummarizeResponse;
 }
 
 /**

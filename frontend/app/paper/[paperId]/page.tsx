@@ -1,3 +1,5 @@
+import SummaryPanel from "@/components/summary/summary-panel";
+
 export default async function PaperPage({
   params,
 }: {
@@ -5,14 +7,18 @@ export default async function PaperPage({
 }) {
   const { paperId } = await params;
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background px-6 text-foreground">
-      <h1 className="text-2xl font-semibold">Paper workspace</h1>
-      <p className="text-muted-foreground">
-        paper_id: <code className="rounded bg-muted px-2 py-1 font-mono text-sm">{paperId}</code>
-      </p>
-      <p className="max-w-md text-center text-sm text-muted-foreground">
-        Summary, analysis, and Q&amp;A panels land here in Parts 3–5.
-      </p>
+    <main className="flex min-h-screen flex-col items-center gap-10 bg-background px-6 py-16 text-foreground">
+      <header className="text-center">
+        <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+          Paper workspace
+        </p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight">Make the paper legible.</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Choose how you want the summary to sound.
+        </p>
+      </header>
+
+      <SummaryPanel paperId={paperId} className="max-w-3xl" />
     </main>
   );
 }
