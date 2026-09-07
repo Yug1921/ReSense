@@ -1,10 +1,3 @@
-/**
- * Typed client for the ReSense FastAPI backend.
- *
- * Mirrors the Pydantic models in backend/app/models/schemas.py exactly —
- * keep these in sync if a backend response shape changes.
- */
-
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -19,12 +12,25 @@ export interface UploadResponse {
   reused_existing: boolean;
 }
 
-export type Tone = "simple" | "technical" | "connect";
+export type Tone =
+  | "academic"
+  | "technical"
+  | "research_insight"
+  | "figure_table_analysis"
+  | "critical_review";
 
-export const TONES: ReadonlyArray<{ id: Tone; label: string; description: string }> = [
-  { id: "simple", label: "Simple", description: "A clear explanation without specialist jargon." },
-  { id: "technical", label: "Technical", description: "Detailed language for a research-focused read." },
-  { id: "connect", label: "Connect", description: "The main ideas linked to broader context and implications." },
+export interface ToneMeta {
+  id: Tone;
+  label: string;
+  description: string;
+}
+
+export const TONES: ToneMeta[] = [
+  { id: "academic", label: "Academic", description: "Follows the paper's own structure and preserves its terminology." },
+  { id: "technical", label: "Technical", description: "Algorithms, architecture, dataset, parameters, evaluation metrics." },
+  { id: "research_insight", label: "Research Insight", description: "Problem, gap, novelty, contribution, significance." },
+  { id: "figure_table_analysis", label: "Figure & Table Analysis", description: "What each figure/table shows and what it supports." },
+  { id: "critical_review", label: "Critical Review", description: "What's demonstrated vs. merely claimed; limitations." },
 ];
 
 export interface SummarizeResponse {
@@ -43,38 +49,62 @@ export class ApiError extends Error {
   }
 }
 
-export async function summarizePaper(
-  paperId: string,
-  tone: Tone
-): Promise<SummarizeResponse> {
-  const response = await fetch(`${API_BASE_URL}/summarize`, {
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paper_id: paperId, tone }),
+    body: JSON.stringify(body),
   });
-
-  let body: unknown;
+  let data: unknown;
   try {
-    body = await response.json();
+    data = await res.json();
   } catch {
-    body = null;
+    data = null;
   }
-
-  if (!response.ok) {
-    const detail =
-      (body as { detail?: string } | null)?.detail ??
-      "Summary generation failed — the server didn't return a readable error.";
-    throw new ApiError(detail, response.status);
+  if (!res.ok) {
+    const detail = (data as { detail?: string } | null)?.detail ?? `Request failed (${res.status})`;
+    throw new ApiError(detail, res.status);
   }
-
-  return body as SummarizeResponse;
+  return data as T;
 }
 
-/**
- * Uploads a paper with real progress reporting via XMLHttpRequest — fetch()
- * has no upload-progress event, so XHR is the only way to drive an actual
- * (not simulated) progress bar for a multipart upload.
- */
+export interface ChartPoint {
+  label: string;
+  value: number;
+}
+
+export interface Classification {
+  paper_type: string;
+  complexity: string;
+  complexity_score: number;
+}
+
+export interface AnalyzeResponse {
+  paper_id: string;
+  section_lengths: ChartPoint[];
+  keywords: ChartPoint[];
+  classification: Classification | null;
+  cached: boolean;
+}
+
+export interface AskResponse {
+  paper_id: string;
+  answer: string;
+  used_sections: string[];
+}
+
+export function askPaper(paperId: string, question: string): Promise<AskResponse> {
+  return postJson<AskResponse>("/ask", { paper_id: paperId, question });
+}
+
+export function analyzePaper(paperId: string): Promise<AnalyzeResponse> {
+  return postJson<AnalyzeResponse>("/analyze", { paper_id: paperId });
+}
+
+export function summarizePaper(paperId: string, tone: Tone): Promise<SummarizeResponse> {
+  return postJson<SummarizeResponse>("/summarize", { paper_id: paperId, tone });
+}
+
 export function uploadPaper(
   file: File,
   onProgress?: (percent: number) => void
@@ -85,38 +115,23 @@ export function uploadPaper(
 
   const promise = new Promise<UploadResponse>((resolve, reject) => {
     xhr.open("POST", `${API_BASE_URL}/upload`);
-
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && onProgress) {
         onProgress(Math.round((event.loaded / event.total) * 100));
       }
     };
-
     xhr.onload = () => {
       let body: unknown;
-      try {
-        body = JSON.parse(xhr.responseText);
-      } catch {
-        body = null;
-      }
-
+      try { body = JSON.parse(xhr.responseText); } catch { body = null; }
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(body as UploadResponse);
       } else {
-        const detail =
-          (body as { detail?: string } | null)?.detail ??
-          "Upload failed — the server didn't return a readable error.";
+        const detail = (body as { detail?: string } | null)?.detail ?? "Upload failed.";
         reject(new ApiError(detail, xhr.status));
       }
     };
-
-    xhr.onerror = () => {
-      reject(new ApiError("Network error — is the backend running?", 0));
-    };
-    xhr.onabort = () => {
-      reject(new ApiError("Upload cancelled.", 0));
-    };
-
+    xhr.onerror = () => reject(new ApiError("Network error — is the backend running?", 0));
+    xhr.onabort = () => reject(new ApiError("Upload cancelled.", 0));
     xhr.send(formData);
   });
 

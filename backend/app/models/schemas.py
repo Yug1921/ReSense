@@ -7,7 +7,7 @@ coordinate directly.
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
-Tone = Literal["simple", "technical", "connect"]
+Tone = Literal["academic", "technical", "research_insight", "figure_table_analysis", "critical_review"]
 PaperStatus = Literal["uploaded", "parsing", "ready", "parse_failed", "empty_text"]
 
 

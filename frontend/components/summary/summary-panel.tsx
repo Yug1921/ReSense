@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { RotateCw } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,11 @@ import { ToneSelector } from "./tone-selector";
 import { ProcessingScan } from "@/components/processing/processing-scan";
 
 type Phase = "idle" | "scanning" | "ready" | "error";
+
+type FetchState =
+  | { status: "pending" }
+  | { status: "success"; content: string }
+  | { status: "error"; message: string };
 
 export interface SummaryPanelProps {
   paperId: string;
@@ -19,64 +24,63 @@ export function SummaryPanel({ paperId, className }: SummaryPanelProps) {
   const [selectedTone, setSelectedTone] = useState<Tone | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [currentSummary, setCurrentSummary] = useState<string | undefined>();
+  const [summaries, setSummaries] = useState<Partial<Record<Tone, string>>>({});
 
-  // Local cache: once a tone's summary has been generated this session,
-  // re-selecting it shows instantly — no re-running the scan animation
-  // for something we (and the backend) already have.
-  const summaryCache = useRef<Partial<Record<Tone, string>>>({});
+  const [scanDone, setScanDone] = useState(false);
+  const [fetchState, setFetchState] = useState<FetchState>({ status: "pending" });
 
-  // Two independent completion signals — the scan animation and the real
-  // network call — both must finish before we reveal the result, so the
-  // animation never gets cut short by a fast response, and a slow response
-  // never leaves the scan hanging with nothing to show afterward.
-  const scanFinishedRef = useRef(false);
-  const fetchResultRef = useRef<{ content: string } | { error: string } | null>(null);
+  useEffect(() => {
+    if (phase !== "scanning") return;
+    if (!scanDone || fetchState.status === "pending") return;
 
-  const tryReveal = useCallback((tone: Tone) => {
-    if (!scanFinishedRef.current || !fetchResultRef.current) return;
-    const result = fetchResultRef.current;
-    if ("error" in result) {
-      setErrorMessage(result.error);
-      setPhase("error");
-    } else {
-      summaryCache.current[tone] = result.content;
-      setCurrentSummary(result.content);
-      setPhase("ready");
+    if (fetchState.status === "success" && selectedTone) {
+      console.log("[SummaryPanel] both scan + fetch done — revealing summary");
+      startTransition(() => {
+        setSummaries((prev) => ({ ...prev, [selectedTone]: fetchState.content }));
+        setPhase("ready");
+      });
+    } else if (fetchState.status === "error") {
+      console.error("[SummaryPanel] revealing error:", fetchState.message);
+      startTransition(() => {
+        setErrorMessage(fetchState.message);
+        setPhase("error");
+      });
     }
-  }, []);
+  }, [phase, scanDone, fetchState, selectedTone]);
 
-  const handleGenerate = useCallback(() => {
+  function handleGenerate() {
     if (!selectedTone) return;
 
-    const cached = summaryCache.current[selectedTone];
-    if (cached) {
-      setCurrentSummary(cached);
+    if (summaries[selectedTone]) {
       setPhase("ready");
       return;
     }
 
+    console.log("[SummaryPanel] generate clicked — tone:", selectedTone, "paperId:", paperId);
     setErrorMessage(null);
-    scanFinishedRef.current = false;
-    fetchResultRef.current = null;
+    setScanDone(false);
+    setFetchState({ status: "pending" });
     setPhase("scanning");
 
     summarizePaper(paperId, selectedTone)
       .then((res) => {
-        fetchResultRef.current = { content: res.content };
-        tryReveal(selectedTone);
+        console.log("[SummaryPanel] /summarize resolved:", res);
+        setFetchState({ status: "success", content: res.content });
       })
       .catch((err: unknown) => {
-        const message = err instanceof ApiError ? err.message : "Something went wrong generating this summary.";
-        fetchResultRef.current = { error: message };
-        tryReveal(selectedTone);
+        console.error("[SummaryPanel] /summarize rejected:", err);
+        const message =
+          err instanceof ApiError ? err.message : "Something went wrong generating this summary.";
+        setFetchState({ status: "error", message });
       });
-  }, [paperId, selectedTone, tryReveal]);
+  }
 
-  const handleScanComplete = useCallback(() => {
-    scanFinishedRef.current = true;
-    if (selectedTone) tryReveal(selectedTone);
-  }, [selectedTone, tryReveal]);
+  function handleScanComplete() {
+    console.log("[SummaryPanel] scan animation finished");
+    setScanDone(true);
+  }
+
+  const currentSummary = selectedTone ? summaries[selectedTone] : undefined;
 
   return (
     <div className={cn("flex w-full flex-col items-center gap-6", className)}>
@@ -84,9 +88,7 @@ export function SummaryPanel({ paperId, className }: SummaryPanelProps) {
         value={selectedTone}
         onChange={(tone) => {
           setSelectedTone(tone);
-          const cached = summaryCache.current[tone];
-          setCurrentSummary(cached);
-          setPhase(cached ? "ready" : "idle");
+          setPhase(summaries[tone] ? "ready" : "idle");
         }}
         disabled={phase === "scanning"}
       />
@@ -143,7 +145,7 @@ export function SummaryPanel({ paperId, className }: SummaryPanelProps) {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.3 }}
-            className="w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-6"
+            className="w-full max-w-4xl rounded-xl border border-white/10 bg-white/[0.02] p-6"
           >
             <div className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
               {currentSummary}

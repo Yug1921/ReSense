@@ -55,8 +55,9 @@ async def analyze_paper(req: AnalyzeRequest) -> AnalyzeResponse:
         "keywords": keywords,
         "classification": classification,
     }
-    supabase.table(ANALYSIS_TABLE).insert(
-        {"paper_id": req.paper_id, "chart_data_json": chart_data_json}
+    supabase.table(ANALYSIS_TABLE).upsert(
+        {"paper_id": req.paper_id, "chart_data_json": chart_data_json},
+        on_conflict="paper_id",
     ).execute()
 
     return AnalyzeResponse(

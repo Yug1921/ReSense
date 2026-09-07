@@ -1,18 +1,9 @@
-"""
-Track B — tone-conditioned prompt templates.
-
-Three tones, three different *purposes*, not just three reading
-levels:
-  - simple:    understand what the paper says, in plain language
-  - technical: evaluate the paper's rigor, method, and contribution
-  - connect:   understand why it matters and where it applies
-
-Each builds a (system_prompt, user_prompt) pair for `call_openrouter`.
-"""
-
-# Free-tier models have a limited effective context; keep the paper
-# excerpt bounded rather than sending the entire raw text every time.
 _MAX_PAPER_CHARS = 9000
+_LENGTH_BUDGET = (
+    "Keep the ENTIRE response under 300 words total — stay within that "
+    "budget rather than running long, since the response will be cut off "
+    "if it exceeds it."
+)
 
 
 def _trim_paper_text(raw_text: str) -> str:
@@ -21,52 +12,95 @@ def _trim_paper_text(raw_text: str) -> str:
     return raw_text[:_MAX_PAPER_CHARS] + "\n\n[...paper truncated for length...]"
 
 
-_SYSTEM_PROMPTS = {
-    "simple": (
-        "You are explaining a research paper to a curious layperson with no "
-        "background in the field. Use plain, everyday language and short "
-        "sentences. If you must use a technical term, define it in the same "
-        "sentence using an everyday comparison. Avoid jargon, avoid citation "
-        "clutter, and never assume prior knowledge of the field."
-    ),
-    "technical": (
-        "You are summarizing a research paper for a knowledgeable reader in "
-        "the same field — a fellow researcher or graduate student. Preserve "
-        "precise terminology, the methodology, key metrics/results, and any "
-        "stated limitations. Do not oversimplify or drop nuance for the sake "
-        "of brevity."
-    ),
-    "connect": (
-        "You are summarizing a research paper for someone who is not a "
-        "specialist but works in an adjacent field, is a student, or is "
-        "practically minded — they want to know what this research means in "
-        "the real world. Stay substantive and accurate, but foreground "
-        "real-world relevance: relatable analogies, how the findings connect "
-        "to everyday life, industry practice, or other fields, and concrete "
-        "'so what can be done with this' takeaways. Do not drown the reader "
-        "in jargon, but do not oversimplify into vagueness either — this is "
-        "the bridge between a plain-language summary and a technical one."
-    ),
+# Each tone gets its own (persona, structure) pair rather than one shared
+# template — the five tones are meant to shape different structures, not
+# just different reading levels of the same five-part outline.
+_TONE_CONFIG: dict[str, dict[str, str]] = {
+    "academic": {
+        "persona": (
+            "You are summarizing a research paper for an academic reader. "
+            "Preserve its academic terminology precisely — do not simplify "
+            "domain vocabulary or replace it with looser everyday language."
+        ),
+        "structure": (
+            "Organize your summary by following the paper's OWN structure "
+            "(its own section headings, in the order the paper uses them — "
+            "e.g. Introduction, Related Work, Method, Results, Discussion, "
+            "whatever the paper actually has), giving 2-4 sentences per "
+            "section rather than forcing a fixed external template."
+        ),
+    },
+    "technical": {
+        "persona": (
+            "You are summarizing a research paper for a practitioner who "
+            "wants the technical substance, not motivational framing."
+        ),
+        "structure": (
+            "Structure your response under these labeled parts, 2-4 "
+            "sentences each:\n"
+            "1. Algorithm(s) / architecture used\n"
+            "2. Dataset(s) and preprocessing\n"
+            "3. Key equations and parameters\n"
+            "4. Evaluation metrics and reported results"
+        ),
+    },
+    "research_insight": {
+        "persona": (
+            "You are summarizing a research paper to surface its research "
+            "framing, for a reader who wants to understand the paper's "
+            "place in its field, not its technical mechanics."
+        ),
+        "structure": (
+            "Structure your response under these labeled parts, 2-4 "
+            "sentences each:\n"
+            "1. Research problem being addressed\n"
+            "2. Gap in prior work this targets\n"
+            "3. Novelty / contribution of this paper's approach\n"
+            "4. Key assumptions it relies on\n"
+            "5. Why this work is significant"
+        ),
+    },
+    "figure_table_analysis": {
+        "persona": (
+            "You are summarizing a research paper with a focus on its "
+            "figures and tables, for a reader who wants to know what the "
+            "paper's visual evidence shows."
+        ),
+        "structure": (
+            "List each figure or table you can identify from the text "
+            "(captions, in-text references like 'Figure 2 shows...' or "
+            "'Table 1 lists...'), one per line, each covering: what it "
+            "shows, and which section or research claim it supports. If "
+            "the extracted text doesn't let you identify specific figures "
+            "or tables, say so plainly rather than inventing them."
+        ),
+    },
+    "critical_review": {
+        "persona": (
+            "You are critically reviewing a research paper. Be fair but "
+            "genuinely critical, not just summarizing positively."
+        ),
+        "structure": (
+            "Structure your response under these labeled parts, 2-4 "
+            "sentences each:\n"
+            "1. What the authors demonstrate (backed by reported "
+            "experiments/results)\n"
+            "2. What they merely claim or assert without clearly shown "
+            "evidence\n"
+            "3. Experimental concerns (sample size, baselines, statistical "
+            "rigor)\n"
+            "4. Overall validity verdict on the conclusions"
+        ),
+    },
 }
-
-_STRUCTURE_INSTRUCTION = (
-    "Structure your response with these labeled parts, each 2-4 sentences "
-    "unless noted, and keep the ENTIRE response under 300 words total — "
-    "stay within that budget rather than running long, since the response "
-    "will be cut off if it exceeds it:\n"
-    "1. What it's about\n"
-    "2. Why it matters\n"
-    "3. Method in brief\n"
-    "4. Key findings\n"
-    "5. Limitations / caveats (1-2 sentences)"
-)
 
 
 def build_summary_prompt(tone: str, raw_text: str) -> tuple[str, str]:
-    if tone not in _SYSTEM_PROMPTS:
+    if tone not in _TONE_CONFIG:
         raise ValueError(f"Unknown tone: {tone}")
 
-    system_prompt = f"{_SYSTEM_PROMPTS[tone]}\n\n{_STRUCTURE_INSTRUCTION}"
+    config = _TONE_CONFIG[tone]
+    system_prompt = f"{config['persona']}\n\n{config['structure']}\n\n{_LENGTH_BUDGET}"
     paper_excerpt = _trim_paper_text(raw_text)
     user_prompt = (
         "Here is the extracted text of the research paper:\n\n"
@@ -76,63 +110,32 @@ def build_summary_prompt(tone: str, raw_text: str) -> tuple[str, str]:
     return system_prompt, user_prompt
 
 
-# ---------------------------------------------------------------------------
-# Track C — Q&A prompt
-# ---------------------------------------------------------------------------
-
-_ASK_SYSTEM_PROMPT = (
-    "You are a precise research-paper assistant. You answer questions using "
-    "ONLY the excerpts of the paper provided below — never your own outside "
-    "knowledge. If the excerpts don't contain the answer, say plainly that "
-    "the paper doesn't appear to cover that, rather than guessing. Be "
-    "concise and accurate. When helpful, mention which section an answer "
-    "came from (e.g. 'According to the Methodology section...')."
-)
-
-
 def build_ask_prompt(
-    question: str, retrieved_chunks: list[dict], chat_history: list[dict]
+    question: str, relevant_chunks: list[dict], chat_history: list[dict]
 ) -> tuple[str, str]:
-    """
-    retrieved_chunks: [{"section": str, "text": str}, ...] from retrieval.py
-    chat_history: [{"role": "user"|"assistant", "content": str}, ...] — most
-    recent turns only (bounding this is what keeps the QA context window
-    scoped to "one paper session", not the whole conversation ever).
-    """
-    context_blocks = "\n\n".join(
-        f"[Excerpt from '{c['section']}']\n{c['text']}" for c in retrieved_chunks
+    context = "\n\n".join(
+        f"[{chunk['section']}]\n{chunk['text']}" for chunk in relevant_chunks
+    ) or "No relevant paper excerpts were found."
+    history = "\n".join(
+        f"{turn['role'].capitalize()}: {turn['content']}" for turn in chat_history
+    ) or "No previous conversation."
+    system_prompt = (
+        "You answer questions about a research paper using only the supplied excerpts. "
+        "If the excerpts do not support an answer, say so plainly. Do not invent facts."
     )
-
-    history_text = ""
-    if chat_history:
-        history_lines = [f"{turn['role']}: {turn['content']}" for turn in chat_history]
-        history_text = "Recent conversation so far:\n" + "\n".join(history_lines) + "\n\n"
-
     user_prompt = (
-        f"Relevant excerpts from the paper:\n\n{context_blocks}\n\n"
-        f"{history_text}"
-        f"Question: {question}\n\n"
-        "Answer using only the excerpts above."
+        f"Previous conversation:\n{history}\n\n"
+        f"Relevant paper excerpts:\n{context}\n\n"
+        f"Question: {question}"
     )
-    return _ASK_SYSTEM_PROMPT, user_prompt
-
-
-# ---------------------------------------------------------------------------
-# Track D — classification prompt (paper type / complexity)
-# ---------------------------------------------------------------------------
-
-_CLASSIFY_SYSTEM_PROMPT = (
-    "You classify research papers. Respond with ONLY a compact JSON object, "
-    "no prose, no markdown fences, in exactly this shape:\n"
-    '{"paper_type": "empirical|theoretical|survey|case_study|other", '
-    '"complexity": "low|medium|high", "complexity_score": <integer 1-10>}'
-)
+    return system_prompt, user_prompt
 
 
 def build_classification_prompt(raw_text: str) -> tuple[str, str]:
     paper_excerpt = _trim_paper_text(raw_text)
-    user_prompt = (
-        "Here is the extracted text of a research paper. Classify it.\n\n"
-        f"{paper_excerpt}"
+    return (
+        "Classify the research paper using only the provided text. Return valid JSON "
+        "with exactly these keys: paper_type, complexity, complexity_score. "
+        "complexity must be low, medium, or high; complexity_score must be an integer from 1 to 10.",
+        f"Research paper text:\n\n{paper_excerpt}",
     )
-    return _CLASSIFY_SYSTEM_PROMPT, user_prompt

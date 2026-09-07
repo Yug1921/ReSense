@@ -6,6 +6,8 @@ exists for that (paper_id, tone) pair; otherwise generate one via
 OpenRouter and cache it. This caching is what makes switching tones in
 the UI free after the first generation per tone.
 """
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, SUMMARIES_TABLE
@@ -15,7 +17,20 @@ from app.services.prompts import build_summary_prompt
 
 router = APIRouter(tags=["summarize"])
 
-_VALID_TONES = {"simple", "technical", "connect"}
+_VALID_TONES = {"academic", "technical", "research_insight", "figure_table_analysis", "critical_review"}
+_SUPABASE_TIMEOUT_SECONDS = 10
+
+
+async def _execute_query(query):
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(query.execute), timeout=_SUPABASE_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="The paper database did not respond in time. Please try again.",
+        ) from exc
 
 
 @router.post("/summarize", response_model=SummarizeResponse)
@@ -28,9 +43,10 @@ async def summarize_paper(req: SummarizeRequest) -> SummarizeResponse:
 
     supabase = get_supabase()
 
-    paper_result = (
-        supabase.table(PAPERS_TABLE).select("*").eq("id", req.paper_id).limit(1).execute()
+    paper_query = (
+        supabase.table(PAPERS_TABLE).select("*").eq("id", req.paper_id).limit(1)
     )
+    paper_result = await _execute_query(paper_query)
     if not paper_result.data:
         raise HTTPException(status_code=404, detail="No paper found for this paper_id.")
     paper = paper_result.data[0]
@@ -42,14 +58,14 @@ async def summarize_paper(req: SummarizeRequest) -> SummarizeResponse:
         )
 
     # Cache check — this is the "zero extra LLM calls on tone re-visit" behavior.
-    cached = (
+    cached_query = (
         supabase.table(SUMMARIES_TABLE)
         .select("*")
         .eq("paper_id", req.paper_id)
         .eq("tone", req.tone)
         .limit(1)
-        .execute()
     )
+    cached = await _execute_query(cached_query)
     if cached.data:
         return SummarizeResponse(
             paper_id=req.paper_id, tone=req.tone, content=cached.data[0]["content"], cached=True
@@ -66,8 +82,9 @@ async def summarize_paper(req: SummarizeRequest) -> SummarizeResponse:
             status_code=502, detail=f"The summarization assistant is unavailable right now: {exc}"
         ) from exc
 
-    supabase.table(SUMMARIES_TABLE).insert(
+    insert_query = supabase.table(SUMMARIES_TABLE).insert(
         {"paper_id": req.paper_id, "tone": req.tone, "content": content}
-    ).execute()
+    )
+    await _execute_query(insert_query)
 
     return SummarizeResponse(paper_id=req.paper_id, tone=req.tone, content=content, cached=False)
