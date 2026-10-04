@@ -9,8 +9,10 @@ to chat_messages so a reload replays the full conversation instead of
 losing it.
 """
 from fastapi import APIRouter, HTTPException
+import re
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, CHAT_MESSAGES_TABLE, FIGURES_TABLE
+from app.services.figures_data import ensure_figures_captioned
 from app.models.schemas import AskRequest, AskResponse
 from app.services.chunking import chunk_paper
 from app.services.retrieval import retrieve_relevant_chunks
@@ -19,8 +21,33 @@ from app.services.prompts import build_ask_prompt
 
 router = APIRouter(tags=["ask"])
 
-_TOP_K_CHUNKS = 4
+_TOP_K_CHUNKS = 6  # larger papers have more relevant sections to draw from
 _MAX_HISTORY_TURNS = 6  # keeps the context window bounded to recent turns
+
+
+def _local_fallback_answer(question: str, relevant_chunks: list[dict]) -> str:
+    """Return grounded excerpts when all remote providers are temporarily busy."""
+    question_terms = {
+        term.lower() for term in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", question)
+    }
+    ranked = sorted(
+        relevant_chunks,
+        key=lambda chunk: sum(
+            term in chunk["text"].lower() for term in question_terms
+        ),
+        reverse=True,
+    )
+    excerpts = []
+    for chunk in ranked[:2]:
+        text = " ".join(chunk["text"].split())
+        if text:
+            excerpts.append(f"[{chunk['section']}] {text[:700]}")
+    if not excerpts:
+        return "I could not find a relevant passage in this paper."
+    return (
+        "The AI providers are temporarily busy, so here are the most relevant "
+        "paper passages for your question:\n\n" + "\n\n".join(excerpts)
+    )
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -61,8 +88,21 @@ async def ask_paper(req: AskRequest) -> AskResponse:
     # DB gave us newest-first; flip back to chronological order for the prompt.
     chat_history = list(reversed(history_result.data))
 
-    chunks = chunk_paper(paper["raw_text"], paper.get("structure_json"), figures=_fetch_captioned_figures(supabase, req.paper_id))
+    figures = await ensure_figures_captioned(supabase, FIGURES_TABLE, req.paper_id)
+    tables = (paper.get("structure_json") or {}).get("tables", [])
+    extra_chunks = [
+        {"section": f"{(f.get('image_type') or 'figure').capitalize()} on page {f['page_number']}", "text": f["caption"]}
+        for f in figures
+    ] + [
+        {"section": f"Table on page {t['page_number']}", "text": t["content"]}
+        for t in tables
+    ]
+    chunks = chunk_paper(paper["raw_text"], paper.get("structure_json"), extra_chunks=extra_chunks)
     relevant_chunks = retrieve_relevant_chunks(question, chunks, top_k=_TOP_K_CHUNKS)
+    preamble_chunks = [c for c in chunks if c["section"].lower() == "preamble"]
+    for chunk in preamble_chunks:
+        if chunk not in relevant_chunks:
+            relevant_chunks = [chunk] + relevant_chunks
 
     system_prompt, user_prompt = build_ask_prompt(question, relevant_chunks, chat_history)
 
@@ -71,9 +111,7 @@ async def ask_paper(req: AskRequest) -> AskResponse:
     except LLMRateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except LLMRequestError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"The Q&A assistant is unavailable right now: {exc}"
-        ) from exc
+        answer = _local_fallback_answer(question, relevant_chunks)
 
     # Persist both turns so a reload restores the full conversation.
     supabase.table(CHAT_MESSAGES_TABLE).insert(
@@ -85,16 +123,3 @@ async def ask_paper(req: AskRequest) -> AskResponse:
 
     used_sections = sorted({c["section"] for c in relevant_chunks})
     return AskResponse(paper_id=req.paper_id, answer=answer, used_sections=used_sections)
-
-def _fetch_captioned_figures(supabase, paper_id: str) -> list[dict]:
-    """Only figures that already have a caption are useful as retrieval
-    context — an uncaptioned figure (never run through /figures yet) has
-    nothing to search over."""
-    result = (
-        supabase.table(FIGURES_TABLE)
-        .select("page_number, image_type, caption")
-        .eq("paper_id", paper_id)
-        .not_.is_("caption", "null")
-        .execute()
-    )
-    return result.data

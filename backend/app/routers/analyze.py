@@ -10,7 +10,13 @@ from fastapi import APIRouter, HTTPException
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, ANALYSIS_TABLE
 from app.models.schemas import AnalyzeRequest, AnalyzeResponse, Classification
-from app.services.analysis import section_length_stats, keyword_frequency, classify_paper
+from app.services.analysis import (
+    section_length_stats,
+    keyword_frequency,
+    structure_score,
+    deterministic_complexity_score,
+    classify_paper,
+)
 
 
 router = APIRouter(tags=["analyze"])
@@ -38,21 +44,32 @@ async def analyze_paper(req: AnalyzeRequest) -> AnalyzeResponse:
     )
     if cached.data:
         data = cached.data[0]["chart_data_json"]
-        return AnalyzeResponse(
-            paper_id=req.paper_id,
-            section_lengths=data["section_lengths"],
-            keywords=data["keywords"],
-            classification=data.get("classification"),
-            cached=True,
-        )
+        if data.get("version") != 3:
+            cached = None
+        else:
+            return AnalyzeResponse(
+                paper_id=req.paper_id,
+                section_lengths=data["section_lengths"],
+                keywords=data["keywords"],
+                structure_score=data["structure_score"],
+                classification=data.get("classification"),
+                cached=True,
+            )
 
-    section_lengths = section_length_stats(paper.get("structure_json"))
+    section_lengths = section_length_stats(paper.get("structure_json"), paper["raw_text"])
     keywords = keyword_frequency(paper["raw_text"])
+    paper_structure_score = structure_score(section_lengths)
     classification = await classify_paper(paper["raw_text"])  # may be None on LLM failure
+    score = deterministic_complexity_score(paper["raw_text"], section_lengths)
+    complexity = next(label for ceiling, label in ((2, "low"), (4, "medium-low"), (6, "medium"), (8, "high"), (10, "very high")) if score <= ceiling)
+    classification = classification or {"paper_type": "research paper"}
+    classification.update({"complexity": complexity, "complexity_score": score})
 
     chart_data_json = {
+        "version": 3,
         "section_lengths": section_lengths,
         "keywords": keywords,
+        "structure_score": paper_structure_score,
         "classification": classification,
     }
     supabase.table(ANALYSIS_TABLE).upsert(
@@ -64,6 +81,7 @@ async def analyze_paper(req: AnalyzeRequest) -> AnalyzeResponse:
         paper_id=req.paper_id,
         section_lengths=section_lengths,
         keywords=keywords,
+        structure_score=paper_structure_score,
         classification=Classification(**classification) if classification else None,
         cached=False,
     )

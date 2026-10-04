@@ -83,6 +83,7 @@ export interface AnalyzeResponse {
   paper_id: string;
   section_lengths: ChartPoint[];
   keywords: ChartPoint[];
+  structure_score: number;
   classification: Classification | null;
   cached: boolean;
 }
@@ -101,8 +102,12 @@ export function analyzePaper(paperId: string): Promise<AnalyzeResponse> {
   return postJson<AnalyzeResponse>("/analyze", { paper_id: paperId });
 }
 
-export function summarizePaper(paperId: string, tone: Tone): Promise<SummarizeResponse> {
-  return postJson<SummarizeResponse>("/summarize", { paper_id: paperId, tone });
+export function summarizePaper(
+  paperId: string,
+  tone: Tone,
+  refresh = false
+): Promise<SummarizeResponse> {
+  return postJson<SummarizeResponse>("/summarize", { paper_id: paperId, tone, refresh });
 }
 
 export function uploadPaper(

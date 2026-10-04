@@ -57,6 +57,7 @@ async def get_session(paper_id: str) -> SessionResponse:
             paper_id=paper_id,
             section_lengths=data["section_lengths"],
             keywords=data["keywords"],
+            structure_score=data.get("structure_score", 0),
             classification=Classification(**classification) if classification else None,
             cached=True,
         )

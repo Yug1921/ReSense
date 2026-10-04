@@ -11,9 +11,15 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, SUMMARIES_TABLE
+from app.db.supabase_client import FIGURES_TABLE
 from app.models.schemas import SummarizeRequest, SummarizeResponse
 from app.services.llm import call_openrouter, LLMRateLimitError, LLMRequestError
-from app.services.prompts import build_summary_prompt
+from app.services.prompts import (
+    build_summary_prompt,
+    build_figure_table_prompt,
+    normalize_figure_table_response,
+)
+from app.services.figures_data import ensure_figures_captioned
 
 router = APIRouter(tags=["summarize"])
 
@@ -66,15 +72,22 @@ async def summarize_paper(req: SummarizeRequest) -> SummarizeResponse:
         .limit(1)
     )
     cached = await _execute_query(cached_query)
-    if cached.data:
+    if cached.data and not req.refresh:
         return SummarizeResponse(
             paper_id=req.paper_id, tone=req.tone, content=cached.data[0]["content"], cached=True
         )
 
-    system_prompt, user_prompt = build_summary_prompt(req.tone, paper["raw_text"])
+    if req.tone == "figure_table_analysis":
+        figures = await ensure_figures_captioned(supabase, FIGURES_TABLE, req.paper_id)
+        tables = (paper.get("structure_json") or {}).get("tables", [])
+        system_prompt, user_prompt = build_figure_table_prompt(
+            figures, tables, paper_context=paper.get("raw_text") or ""
+        )
+    else:
+        system_prompt, user_prompt = build_summary_prompt(req.tone, paper["raw_text"])
 
     try:
-        content = await call_openrouter(system_prompt, user_prompt, max_tokens=1200)
+        content = await call_openrouter(system_prompt, user_prompt, max_tokens=2200)
     except LLMRateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except LLMRequestError as exc:
@@ -82,9 +95,19 @@ async def summarize_paper(req: SummarizeRequest) -> SummarizeResponse:
             status_code=502, detail=f"The summarization assistant is unavailable right now: {exc}"
         ) from exc
 
-    insert_query = supabase.table(SUMMARIES_TABLE).insert(
-        {"paper_id": req.paper_id, "tone": req.tone, "content": content}
-    )
-    await _execute_query(insert_query)
+    if req.tone == "figure_table_analysis":
+        content = normalize_figure_table_response(content, figures, tables)
+
+    summary_data = {"paper_id": req.paper_id, "tone": req.tone, "content": content}
+    if cached.data:
+        save_query = (
+            supabase.table(SUMMARIES_TABLE)
+            .update({"content": content})
+            .eq("paper_id", req.paper_id)
+            .eq("tone", req.tone)
+        )
+    else:
+        save_query = supabase.table(SUMMARIES_TABLE).insert(summary_data)
+    await _execute_query(save_query)
 
     return SummarizeResponse(paper_id=req.paper_id, tone=req.tone, content=content, cached=False)

@@ -57,7 +57,7 @@ async def call_vision_model(
             if not content:
                 raise LLMRequestError(f"Vision model '{model}' returned empty content.")
             return content.strip()
-        except (LLMRequestError, KeyError, IndexError, AttributeError, TypeError) as exc:
+        except (LLMRequestError, KeyError, IndexError, AttributeError, TypeError, httpx.TransportError) as exc:
             last_error = exc
             continue
 

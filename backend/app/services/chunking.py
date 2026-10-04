@@ -1,26 +1,12 @@
-"""
-Track C — splits a paper's cached text into retrieval-sized chunks.
-
-Uses the structure detected at upload time (Track A) when available, so
-chunks stay aligned to actual sections (nicer for citing "from the
-Methodology section" in answers). Falls back to plain word-window
-chunking for papers where structure detection found nothing.
-"""
-
 _TARGET_WORDS_PER_CHUNK = 220
 
 
-_TARGET_WORDS_PER_CHUNK = 220
-
-
-def chunk_paper(raw_text: str, structure: dict | None, figures: list[dict] | None = None) -> list[dict]:
+def chunk_paper(raw_text: str, structure: dict | None, extra_chunks: list[dict] | None = None) -> list[dict]:
     """
-    figures: optional list of {page_number, image_type, caption} for
-    already-captioned figures (see Track J / /figures). Each captioned
-    figure becomes its own small chunk, so a question like "what does
-    table 2 show" or "what does the code snippet do" can be answered
-    from the vision model's caption the same way a text question is
-    answered from the paper's own text.
+    extra_chunks: additional {section, text} chunks to fold in on top of
+    the paper's own text — e.g. captioned figures AND extracted tables —
+    so /ask can retrieve and answer from them the same way it answers
+    from the paper's prose.
     """
     sections = (structure or {}).get("sections")
     chunks: list[dict] = []
@@ -42,10 +28,5 @@ def chunk_paper(raw_text: str, structure: dict | None, figures: list[dict] | Non
     if not chunks and raw_text.strip():
         chunks.append({"section": "paper", "text": raw_text})
 
-    for fig in figures or []:
-        if not fig.get("caption"):
-            continue
-        label = f"{(fig.get('image_type') or 'figure').capitalize()} on page {fig['page_number']}"
-        chunks.append({"section": label, "text": fig["caption"]})
-
+    chunks.extend(extra_chunks or [])
     return chunks

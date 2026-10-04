@@ -23,6 +23,7 @@ class UploadResponse(BaseModel):
 class SummarizeRequest(BaseModel):
     paper_id: str
     tone: Tone
+    refresh: bool = False
 
 
 class SummarizeResponse(BaseModel):
@@ -78,6 +79,7 @@ class AnalyzeResponse(BaseModel):
     paper_id: str
     section_lengths: list[ChartPoint]
     keywords: list[ChartPoint]
+    structure_score: int = Field(ge=0, le=100)
     classification: Optional[Classification] = None
     cached: bool = Field(
         description="True if served from the analysis cache, False if just computed."

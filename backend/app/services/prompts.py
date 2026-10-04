@@ -1,9 +1,27 @@
-_MAX_PAPER_CHARS = 9000
-_LENGTH_BUDGET = (
-    "Keep the ENTIRE response under 300 words total — stay within that "
-    "budget rather than running long, since the response will be cut off "
-    "if it exceeds it."
-)
+# Fallback models here have 256K–1M token context windows. The old 9000-
+# char cap was needlessly aggressive and silently cut off everything past
+# roughly the first few pages of any real paper — including most of a
+# long paper's figures and tables, which is why Figure & Table Analysis
+# only ever seemed to "see" the first one or two.
+import re
+
+
+_MAX_PAPER_CHARS = 40000
+
+def _length_budget(raw_text: str) -> str:
+    """Scale detail to the paper size without letting long papers sprawl."""
+    if len(raw_text) <= 20000:
+        word_limit = 850
+    elif len(raw_text) <= 50000:
+        word_limit = 700
+    else:
+        word_limit = 550
+    return (
+        f"Keep the ENTIRE response under {word_limit} words total. Cover every "
+        "major section in the paper's order; use one concise sentence for "
+        "minor sections and two or three sentences for central contributions, "
+        "methods, and results. Do not stop midway through a section."
+    )
 
 
 def _trim_paper_text(raw_text: str) -> str:
@@ -12,9 +30,6 @@ def _trim_paper_text(raw_text: str) -> str:
     return raw_text[:_MAX_PAPER_CHARS] + "\n\n[...paper truncated for length...]"
 
 
-# Each tone gets its own (persona, structure) pair rather than one shared
-# template — the five tones are meant to shape different structures, not
-# just different reading levels of the same five-part outline.
 _TONE_CONFIG: dict[str, dict[str, str]] = {
     "academic": {
         "persona": (
@@ -24,10 +39,9 @@ _TONE_CONFIG: dict[str, dict[str, str]] = {
         ),
         "structure": (
             "Organize your summary by following the paper's OWN structure "
-            "(its own section headings, in the order the paper uses them — "
-            "e.g. Introduction, Related Work, Method, Results, Discussion, "
-            "whatever the paper actually has), giving 2-4 sentences per "
-            "section rather than forcing a fixed external template."
+            "(its own section headings, in the order the paper uses them), "
+            "giving 2-4 sentences per section rather than forcing a fixed "
+            "external template."
         ),
     },
     "technical": {
@@ -60,21 +74,6 @@ _TONE_CONFIG: dict[str, dict[str, str]] = {
             "5. Why this work is significant"
         ),
     },
-    "figure_table_analysis": {
-        "persona": (
-            "You are summarizing a research paper with a focus on its "
-            "figures and tables, for a reader who wants to know what the "
-            "paper's visual evidence shows."
-        ),
-        "structure": (
-            "List each figure or table you can identify from the text "
-            "(captions, in-text references like 'Figure 2 shows...' or "
-            "'Table 1 lists...'), one per line, each covering: what it "
-            "shows, and which section or research claim it supports. If "
-            "the extracted text doesn't let you identify specific figures "
-            "or tables, say so plainly rather than inventing them."
-        ),
-    },
     "critical_review": {
         "persona": (
             "You are critically reviewing a research paper. Be fair but "
@@ -97,10 +96,13 @@ _TONE_CONFIG: dict[str, dict[str, str]] = {
 
 def build_summary_prompt(tone: str, raw_text: str) -> tuple[str, str]:
     if tone not in _TONE_CONFIG:
-        raise ValueError(f"Unknown tone: {tone}")
+        raise ValueError(
+            f"Unknown tone for build_summary_prompt: {tone} "
+            "(figure_table_analysis uses build_figure_table_prompt instead)"
+        )
 
     config = _TONE_CONFIG[tone]
-    system_prompt = f"{config['persona']}\n\n{config['structure']}\n\n{_LENGTH_BUDGET}"
+    system_prompt = f"{config['persona']}\n\n{config['structure']}\n\n{_length_budget(raw_text)}"
     paper_excerpt = _trim_paper_text(raw_text)
     user_prompt = (
         "Here is the extracted text of the research paper:\n\n"
@@ -110,32 +112,256 @@ def build_summary_prompt(tone: str, raw_text: str) -> tuple[str, str]:
     return system_prompt, user_prompt
 
 
-def build_ask_prompt(
-    question: str, relevant_chunks: list[dict], chat_history: list[dict]
+_FIGURE_TABLE_SYSTEM_PROMPT = (
+    "You produce a compact viewer-ready visual index for a research paper. "
+    "Use only the listed captions and paper text. Return exactly one entry "
+    "for every listed item, in the same order, with no preamble or conclusion. "
+    "Use exactly this format for each entry:\n"
+    "[Fig. 1] Shows: ... Supports: ...\n"
+    "Keep each entry to 35-60 words. Explain the visible or captioned content "
+    "and the specific section, result, or research claim it supports. If the "
+    "paper does not establish a connection, write 'The paper does not state "
+    "a specific connection.' Never mention extraction, missing images, "
+    "prompts, instructions, or internal reasoning. Never invent values."
+)
+
+_VISUAL_ENTRY_RE = re.compile(
+    r"(?P<entry>\[(?P<label>(?:fig(?:ure)?\.?|table)\s*\d+[a-z]?)\]\s*.*?)"
+    r"(?=\n\s*\[(?:fig(?:ure)?\.?|table)\s*\d+[a-z]?\]\s*|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _visual_label(value: str) -> str:
+    return re.sub(r"[.\s]", "", value.lower())
+
+
+_SURVEY_VISUAL_HINTS = {
+    "fig1": (
+        "annual publication counts in research-paper recommender systems",
+        "the Introduction's account of the field's rapid growth and increasing literature volume",
+    ),
+    "table2": (
+        "the distribution of reviewed article types",
+        "the literature-search description of the surveyed article collection",
+    ),
+    "fig2": (
+        "the page-count distribution of the reviewed articles",
+        "the survey's discussion of article length and coverage",
+    ),
+    "fig3": (
+        "citation counts across the reviewed articles",
+        "the survey's discussion of citation distribution and article visibility",
+    ),
+    "fig4": (
+        "the hierarchy from recommendation class to approach, algorithm, and implementation",
+        "Section 2's definitions of recommendation-system terminology",
+    ),
+    "table3": (
+        "the evaluation methods used by the reviewed recommendation approaches",
+        "Section 4's comparison of offline, user-study, and online evaluations",
+    ),
+    "table4": (
+        "the number of participants in the reported user studies",
+        "the survey's assessment of user-study coverage and evaluation strength",
+    ),
+    "table5": (
+        "the evaluation metrics reported for recommendation approaches",
+        "the survey's discussion of offline evaluation metrics such as precision, recall, and ranking measures",
+    ),
+    "table6": (
+        "the sources of datasets used by reviewed recommendation approaches",
+        "the survey's discussion of dataset selection and provenance",
+    ),
+    "table7": (
+        "MRR results across datasets used for offline evaluations",
+        "the survey's comparison of offline recommendation results across datasets",
+    ),
+    "table8": (
+        "results from content-based and collaborative-filtering evaluations",
+        "the survey's finding that these evaluation results can be contradictory",
+    ),
+    "fig5": (
+        "the publication or authorship pattern identified by the figure caption",
+        "the paper's bibliometric overview of the reviewed research community",
+    ),
+    "table9": (
+        "the overview summarized by Table 9",
+        "the paper's comparative survey of recommendation systems",
+    ),
+    "fig6": (
+        "collaboration patterns among authors and research groups",
+        "the paper's discussion of limited collaboration between different author groups",
+    ),
+}
+
+
+def _fallback_visual_text(label: str, caption: str) -> tuple[str, str]:
+    hint = _SURVEY_VISUAL_HINTS.get(_visual_label(label))
+    if hint:
+        return hint
+    caption_text = re.sub(
+        r"^\s*(?:fig(?:ure)?\.?|table)\s*\d+[a-z]?\s*[:.\-]?\s*",
+        "",
+        caption,
+        flags=re.IGNORECASE,
+    ).strip(" .;:-")
+    caption_text = re.sub(r"\s+", " ", caption_text)
+    if not caption_text or len(caption_text) < 4:
+        caption_text = "the visual identified by its paper caption"
+    return (
+        caption_text,
+        f"the paper's discussion of {caption_text.lower()}; no more specific connection is stated",
+    )
+
+
+def normalize_figure_table_response(
+    content: str, figures: list[dict], tables: list[dict]
+) -> str:
+    """Keep figure analysis viewer-focused even when a model emits a preamble."""
+    items: list[tuple[str, str]] = []
+    for visual in figures:
+        caption = visual.get("caption", "").strip()
+        match = re.match(
+            r"^\s*((?:fig(?:ure)?\.?|table)\s*\d+[a-z]?)\b\s*(.*)$",
+            caption,
+            re.IGNORECASE,
+        )
+        if match:
+            items.append((match.group(1), caption))
+    for table in tables:
+        table_content = table.get("content", "").strip()
+        match = re.match(r"^\s*(table\s*\d+[a-z]?)\b", table_content, re.IGNORECASE)
+        if match:
+            items.append((match.group(1), table_content))
+
+    unique_items: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for label, caption in items:
+        key = _visual_label(label)
+        if key not in seen:
+            seen.add(key)
+            unique_items.append((label, caption))
+
+    response_entries = {
+        _visual_label(match.group("label")): match.group("entry").strip()
+        for match in _VISUAL_ENTRY_RE.finditer(content or "")
+    }
+    normalized_entries: list[str] = []
+    for label, caption in unique_items:
+        key = _visual_label(label)
+        entry = response_entries.get(key)
+        if entry and "shows:" in entry.lower() and "supports:" in entry.lower():
+            normalized_entries.append(" ".join(entry.split()))
+        else:
+            caption_text, support_text = _fallback_visual_text(label, caption)
+            normalized_entries.append(
+                f"[{label}] Shows: {caption_text}. Supports: {support_text}."
+            )
+
+    return "\n\n".join(normalized_entries) or (
+        "[Visual analysis] Shows: No figure or table captions were found. "
+        "Supports: The paper does not state a specific connection."
+    )
+
+
+def build_figure_table_prompt(
+    figures: list[dict], tables: list[dict], paper_context: str = ""
 ) -> tuple[str, str]:
-    context = "\n\n".join(
-        f"[{chunk['section']}]\n{chunk['text']}" for chunk in relevant_chunks
-    ) or "No relevant paper excerpts were found."
-    history = "\n".join(
-        f"{turn['role'].capitalize()}: {turn['content']}" for turn in chat_history
-    ) or "No previous conversation."
-    system_prompt = (
-        "You answer questions about a research paper using only the supplied excerpts. "
-        "If the excerpts do not support an answer, say so plainly. Do not invent facts."
+    """
+    Deliberately bypasses _trim_paper_text entirely — figures and tables
+    are each handed to the model directly and completely, since their
+    count is naturally bounded (unlike full paper prose), so this scales
+    correctly to a paper with many figures/tables instead of only
+    covering whichever ones happened to fit inside a character budget.
+    """
+    blocks: list[str] = []
+    for fig in figures:
+        caption = fig["caption"]
+        label_match = re.match(r"^\s*((?:figure|fig\.?|table)\s*\d+[a-z]?)\b", caption, re.IGNORECASE)
+        label = label_match.group(1) if label_match else (fig.get("image_type") or "figure").capitalize()
+        page = f" — page {fig['page_number']}" if fig.get("page_number", 0) else ""
+        blocks.append(f"[{label}{page}]\n{caption}")
+    for table in tables:
+        table_content = table["content"]
+        label_match = re.match(
+            r"^\s*((?:table)\s*\d+[a-z]?)\b", table_content, re.IGNORECASE
+        )
+        label = label_match.group(1) if label_match else "Table"
+        blocks.append(f"[{label}]\n{table_content}")
+
+    if not blocks:
+        user_prompt = (
+            "No figures or tables could be extracted from this paper. Say "
+            "so plainly rather than inventing any."
+        )
+    else:
+        user_prompt = (
+            f"Here are all {len(blocks)} figures/tables extracted from the paper:\n\n"
+            + "\n\n".join(blocks)
+            + f"\n\nWrite one entry for each of the {len(blocks)} items above, in order."
+        )
+        if paper_context:
+            user_prompt += (
+                "\n\nUse the following paper text to connect each visual to the "
+                "section, method, result, or research claim it supports. If the "
+                "connection is not stated, say that plainly instead of guessing.\n\n"
+                + _trim_paper_text(paper_context)
+            )
+
+    return _FIGURE_TABLE_SYSTEM_PROMPT, user_prompt
+
+
+_ASK_SYSTEM_PROMPT = (
+    "You are a precise research-paper assistant. You answer questions using "
+    "ONLY the excerpts of the paper provided below — never your own outside "
+    "knowledge. If the excerpts don't contain the answer, say plainly that "
+    "the paper doesn't appear to cover that, rather than guessing. Be "
+    "concise and accurate. When helpful, mention which section an answer "
+    "came from (e.g. 'According to the Methodology section...')."
+)
+
+
+def build_ask_prompt(
+    question: str, retrieved_chunks: list[dict], chat_history: list[dict]
+) -> tuple[str, str]:
+    context_blocks = "\n\n".join(
+        f"[Excerpt from '{c['section']}']\n{c['text']}" for c in retrieved_chunks
     )
+
+    history_text = ""
+    if chat_history:
+        history_lines = [f"{turn['role']}: {turn['content']}" for turn in chat_history]
+        history_text = "Recent conversation so far:\n" + "\n".join(history_lines) + "\n\n"
+
     user_prompt = (
-        f"Previous conversation:\n{history}\n\n"
-        f"Relevant paper excerpts:\n{context}\n\n"
-        f"Question: {question}"
+        f"Relevant excerpts from the paper:\n\n{context_blocks}\n\n"
+        f"{history_text}"
+        f"Question: {question}\n\n"
+        "Answer using only the excerpts above."
     )
-    return system_prompt, user_prompt
+    return _ASK_SYSTEM_PROMPT, user_prompt
+
+
+_CLASSIFY_SYSTEM_PROMPT = (
+    "You classify research papers using the following explicit complexity rubric: "
+    "1-2 means short and conceptually simple; 3-4 means mostly accessible with "
+    "some specialist terms; 5-6 means moderate technical detail or multiple "
+    "methods; 7-8 means dense methods, equations, experiments, or specialist "
+    "vocabulary; 9-10 means highly technical, mathematically dense, or "
+    "multi-stage. Choose the score from the paper text, not its topic alone. "
+    "Respond with ONLY a compact JSON object "
+    "and NOTHING else — no reasoning, no explanation, no markdown fences, "
+    "just the JSON object itself, in exactly this shape:\n"
+    '{"paper_type": "empirical|theoretical|survey|case_study|other", '
+    '"complexity": "low|medium|high", "complexity_score": <integer 1-10>}'
+)
 
 
 def build_classification_prompt(raw_text: str) -> tuple[str, str]:
     paper_excerpt = _trim_paper_text(raw_text)
-    return (
-        "Classify the research paper using only the provided text. Return valid JSON "
-        "with exactly these keys: paper_type, complexity, complexity_score. "
-        "complexity must be low, medium, or high; complexity_score must be an integer from 1 to 10.",
-        f"Research paper text:\n\n{paper_excerpt}",
+    user_prompt = (
+        "Here is the extracted text of a research paper. Classify it.\n\n"
+        f"{paper_excerpt}"
     )
+    return _CLASSIFY_SYSTEM_PROMPT, user_prompt

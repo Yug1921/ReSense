@@ -51,28 +51,6 @@ const RING_COLORS = {
   focus: "#2cfb8f",
 };
 
-const CANONICAL_SECTIONS = [
-  "abstract",
-  "introduction",
-  "method",
-  "methodology",
-  "results",
-  "discussion",
-  "conclusion",
-];
-
-function computeStructureScore(sectionLengths: AnalyzeResponse["section_lengths"]): number {
-  const found = new Set(
-    sectionLengths
-      .map((s) => s.label.toLowerCase())
-      .filter((label) => CANONICAL_SECTIONS.some((c) => label.includes(c)))
-  );
-  const distinctSlots = new Set(
-    [...found].map((f) => (f.includes("method") ? "method" : f))
-  );
-  return Math.min(100, Math.round((distinctSlots.size / 5) * 100));
-}
-
 function computeFocusScore(keywords: AnalyzeResponse["keywords"]): number {
   if (keywords.length === 0) return 0;
   const total = keywords.reduce((sum, k) => sum + k.value, 0);
@@ -141,7 +119,6 @@ export function AnalysisPanel({ paperId, className }: AnalysisPanelProps) {
 
   useEffect(() => {
     let cancelled = false;
-    setPhase("loading");
 
     analyzePaper(paperId)
       .then((res) => {
@@ -178,8 +155,10 @@ export function AnalysisPanel({ paperId, className }: AnalysisPanelProps) {
   }
 
   const complexityScore = data.classification ? data.classification.complexity_score * 10 : 0;
-  const structureScore = computeStructureScore(data.section_lengths);
+  const structureScore = data.structure_score;
   const focusScore = computeFocusScore(data.keywords);
+  const totalWords = data.section_lengths.reduce((sum, section) => sum + section.value, 0);
+  const largestSection = data.section_lengths[0];
 
   return (
     <div className={className}>
@@ -199,7 +178,12 @@ export function AnalysisPanel({ paperId, className }: AnalysisPanelProps) {
 
       <div className="mt-8 grid gap-6 sm:grid-cols-2">
         <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-          <h3 className="mb-3 text-sm font-medium text-zinc-300">Section Length</h3>
+              <h3 className="mb-1 text-sm font-medium text-zinc-300">Where the paper spends its space</h3>
+              <p className="mb-3 text-xs text-muted-foreground">Longer bars mean more detail in that section.</p>
+              <p className="mb-3 text-xs text-zinc-400">
+                {data.section_lengths.length} sections mapped, about {totalWords.toLocaleString()} words analyzed.
+                {largestSection && ` Most detail: ${largestSection.label} (${largestSection.value.toLocaleString()} words).`}
+              </p>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data.section_lengths} layout="vertical" margin={{ left: 16, right: 16 }}>
               <XAxis type="number" hide />
@@ -227,7 +211,8 @@ export function AnalysisPanel({ paperId, className }: AnalysisPanelProps) {
         </div>
 
         <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-          <h3 className="mb-3 text-sm font-medium text-zinc-300">Top Keywords</h3>
+              <h3 className="mb-1 text-sm font-medium text-zinc-300">Main topics</h3>
+              <p className="mb-3 text-xs text-muted-foreground">Terms that appear most often after common words are removed.</p>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data.keywords.slice(0, 8)} layout="vertical" margin={{ left: 16, right: 16 }}>
               <XAxis type="number" hide />

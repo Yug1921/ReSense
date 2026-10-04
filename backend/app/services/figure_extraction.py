@@ -10,10 +10,16 @@ minimum-dimension heuristic, since captioning those with a vision model
 would waste free-tier budget on content that was never a real figure.   
 """
 import pymupdf
+import re
 
 MIN_WIDTH = 120
 MIN_HEIGHT = 120
-MAX_IMAGES_PER_PAPER = 12  # hard cap so one dense paper can't blow the vision budget
+MAX_IMAGES_PER_PAPER = 32  # bound vision work while covering dense survey papers
+CAPTION_REGION_HEIGHT = 360
+_VISUAL_CAPTION_RE = re.compile(
+    r"^\s*(?P<label>(?:figure|fig\.?|table)\s*\d+[a-z]?)\b(?P<title>.*)$",
+    re.IGNORECASE,
+)
 
 
 class ImageExtractionError(Exception):
@@ -56,6 +62,41 @@ def extract_images_from_pdf(file_bytes: bytes) -> list[dict]:
                         "extension": base_image["ext"],
                         "width": width,
                         "height": height,
+                    }
+                )
+                if len(images) >= MAX_IMAGES_PER_PAPER:
+                    break
+
+            if len(images) >= MAX_IMAGES_PER_PAPER:
+                break
+
+            # Charts and tables are often vector drawing commands rather than
+            # embedded images. Render a bounded region around their printed
+            # caption so vision receives those visuals too.
+            for block in page.get_text("blocks"):
+                block_text = " ".join(block[4].split())
+                caption_match = _VISUAL_CAPTION_RE.match(block_text)
+                if not caption_match:
+                    continue
+
+                label = caption_match.group("label").lower()
+                caption_y0, caption_y1 = block[1], block[3]
+                if label.startswith("table"):
+                    clip_top = max(0, caption_y0 - 20)
+                    clip_bottom = min(page.rect.height, caption_y1 + CAPTION_REGION_HEIGHT)
+                else:
+                    clip_top = max(0, caption_y0 - CAPTION_REGION_HEIGHT)
+                    clip_bottom = min(page.rect.height, caption_y1 + 20)
+
+                clip = pymupdf.Rect(0, clip_top, page.rect.width, clip_bottom)
+                pixmap = page.get_pixmap(matrix=pymupdf.Matrix(2, 2), clip=clip, alpha=False)
+                images.append(
+                    {
+                        "page_number": page_index + 1,
+                        "image_bytes": pixmap.tobytes("png"),
+                        "extension": "png",
+                        "width": pixmap.width,
+                        "height": pixmap.height,
                     }
                 )
                 if len(images) >= MAX_IMAGES_PER_PAPER:

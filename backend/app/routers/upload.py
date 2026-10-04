@@ -55,6 +55,16 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
     )
     if existing.data:
         row = existing.data[0]
+        if row["status"] == "ready" and filename.lower().endswith(".pdf"):
+            try:
+                parsed = parse_file(filename, file_bytes)
+                supabase.table(PAPERS_TABLE).update(
+                    {"raw_text": parsed.raw_text, "structure_json": parsed.structure}
+                ).eq("id", row["id"]).execute()
+                _extract_and_store_figures(supabase, paper_id=row["id"], file_bytes=file_bytes)
+                row["structure_json"] = parsed.structure
+            except Exception:
+                pass
         return UploadResponse(
             paper_id=row["id"],
             status=row["status"],
@@ -136,8 +146,21 @@ def _extract_and_store_figures(supabase, paper_id: str, file_bytes: bytes) -> No
     except ImageExtractionError:
         return
 
+    existing_result = (
+        supabase.table(FIGURES_TABLE)
+        .select("storage_path")
+        .eq("paper_id", paper_id)
+        .execute()
+    )
+    existing_paths = {row["storage_path"] for row in existing_result.data}
+
     for index, img in enumerate(images):
         try:
+            storage_path = (
+                f"{paper_id}/page{img['page_number']}_{index}.{img['extension']}"
+            )
+            if storage_path in existing_paths:
+                continue
             storage_path = upload_figure_image(
                 paper_id, img["page_number"], index, img["image_bytes"], img["extension"]
             )
@@ -150,5 +173,6 @@ def _extract_and_store_figures(supabase, paper_id: str, file_bytes: bytes) -> No
                     "height": img["height"],
                 }
             ).execute()
+            existing_paths.add(storage_path)
         except Exception:
             continue  # one bad image shouldn't sink the rest

@@ -15,9 +15,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, FIGURES_TABLE
 from app.models.schemas import AnalyzeRequest, FiguresResponse, Figure
-from app.services.figure_storage import download_figure_image
-from app.services.vision import call_vision_model
-from app.services.vision_prompts import build_vision_prompt, parse_vision_response
+from app.services.figures_data import ensure_figures_captioned
 
 router = APIRouter(tags=["figures"])
 
@@ -34,37 +32,8 @@ async def get_figures(req: AnalyzeRequest) -> FiguresResponse:
     if paper_result.data[0]["status"] != "ready":
         raise HTTPException(status_code=409, detail="Paper is not ready.")
 
-    figures_result = (
-        supabase.table(FIGURES_TABLE)
-        .select("*")
-        .eq("paper_id", req.paper_id)
-        .order("page_number")
-        .execute()
-    )
-    rows = figures_result.data
+    rows = await ensure_figures_captioned(supabase, FIGURES_TABLE, req.paper_id)
     all_cached = True
-
-    for row in rows:
-        if row.get("caption"):
-            continue  # already captioned in a previous call
-
-        all_cached = False
-        try:
-            image_bytes = download_figure_image(row["storage_path"])
-            extension = row["storage_path"].rsplit(".", 1)[-1]
-            system_prompt, user_text = build_vision_prompt(row["page_number"])
-            raw_response = await call_vision_model(system_prompt, user_text, image_bytes, extension)
-            image_type, caption = parse_vision_response(raw_response)
-
-            supabase.table(FIGURES_TABLE).update(
-                {"image_type": image_type, "caption": caption}
-            ).eq("id", row["id"]).execute()
-            row["image_type"] = image_type
-            row["caption"] = caption
-        except Exception:
-            # One bad/uncaptionable image should never fail the whole
-            # request — leave it uncaptioned and move on to the rest.
-            continue
 
     return FiguresResponse(
         paper_id=req.paper_id,

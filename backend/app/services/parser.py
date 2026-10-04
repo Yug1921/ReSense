@@ -1,23 +1,11 @@
-"""
-Track A — File ingestion & parsing.
-
-Extracts plain text and a rough section structure from an uploaded
-PDF or DOCX. This is the ONLY place in the app that touches the raw
-file — every other feature (summarize, analyze, ask) reads the
-cached `raw_text` / `structure_json` produced here instead of
-re-parsing the file.
-"""
 import hashlib
+import io
 import re
 from dataclasses import dataclass, field
 
 import pdfplumber
 from docx import Document
 
-# A heading looks like a short, title-cased or all-caps line, optionally
-# numbered ("3.", "3.1", "III."), with no trailing punctuation like a period
-# mid-sentence. This is intentionally simple — "rough structure", not a
-# full document-layout model.
 _HEADING_RE = re.compile(
     r"^\s*(?:\d+(?:\.\d+)*\.?|[IVX]+\.)?\s*"
     r"([A-Z][A-Za-z0-9 ,\-:]{2,80})\s*$"
@@ -26,15 +14,19 @@ _COMMON_SECTION_NAMES = {
     "abstract", "introduction", "background", "related work", "methodology",
     "method", "methods", "materials and methods", "experiments", "results",
     "discussion", "conclusion", "conclusions", "future work", "references",
-    "acknowledgments", "acknowledgements", "limitations",
+    "acknowledgments", "acknowledgements", "limitations", "definitions",
+    "evaluation", "datasets", "analysis",
 }
+_TABLE_CAPTION_RE = re.compile(
+    r"^\s*table\s+\d+[a-z]?\b.*$", re.IGNORECASE
+)
 
 
 @dataclass
 class ParsedPaper:
     raw_text: str
     structure: dict = field(default_factory=dict)
-    status: str = "ready"  # ready | parse_failed | empty_text
+    status: str = "ready"
 
 
 class UnsupportedFileTypeError(Exception):
@@ -46,25 +38,88 @@ class FileParsingError(Exception):
 
 
 def compute_file_hash(file_bytes: bytes) -> str:
-    """Used to dedupe repeat uploads of the same file (see Track A checklist)."""
     return hashlib.sha256(file_bytes).hexdigest()
 
 
-def extract_text_from_pdf(file_bytes: bytes) -> str:
-    import io
+def extract_text_and_tables_from_pdf(file_bytes: bytes) -> tuple[str, list[dict]]:
+    """
+    Extracts both the plain text AND any real (structured, multi-row,
+    multi-column) tables from the PDF, in one pass over the same
+    pdfplumber document.
+
+    Tables are extracted via pdfplumber's own layout-based table detector
+    (extract_tables) rather than asked from the LLM based on prose text —
+    this is what actually lets us tell a real table apart from a figure,
+    since tables are a genuine structured-grid layout on the page, not
+    just "an image that looks tabular."
+    """
     try:
-        text_parts = []
+        text_parts: list[str] = []
+        tables: list[dict] = []
+
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text() or ""
-                text_parts.append(page_text)
-        return "\n".join(text_parts).strip()
-    except Exception as exc:  # corrupted / unreadable PDF
+            for page_index, page in enumerate(pdf.pages):
+                text_parts.append(page.extract_text() or "")
+
+                page_tables: list[dict] = []
+                for raw_table in page.extract_tables():
+                    cleaned_rows = [
+                        [(cell or "").strip() for cell in row]
+                        for row in raw_table
+                        if any((cell or "").strip() for cell in row)
+                    ]
+                    # pdfplumber occasionally mis-detects a paragraph of
+                    # body text as a fake 1-column "table" — a real table
+                    # needs at least 2 rows and 2 columns to count.
+                    if len(cleaned_rows) < 2 or len(cleaned_rows[0]) < 2:
+                        continue
+
+                    header, *body_rows = cleaned_rows
+                    lines = [
+                        " | ".join(header),
+                        " | ".join("---" for _ in header),
+                    ]
+                    lines.extend(" | ".join(row) for row in body_rows)
+
+                    page_tables.append(
+                        {
+                            "page_number": page_index + 1,
+                            "content": "\n".join(lines),
+                        }
+                    )
+
+                # Borderless tables and tables mixed with charts are commonly
+                # missed by extract_tables(). Keep the caption and nearby text
+                # as a useful fallback instead of reporting no table at all.
+                if not page_tables:
+                    page_lines = [line.strip() for line in (page.extract_text() or "").splitlines()]
+                    for line_index, line in enumerate(page_lines):
+                        if not _TABLE_CAPTION_RE.match(line):
+                            continue
+                        table_lines = [line]
+                        for candidate in page_lines[line_index + 1 : line_index + 31]:
+                            if _TABLE_CAPTION_RE.match(candidate) or re.match(
+                                r"^\s*(?:figure|fig\.?\s*\d+)", candidate, re.IGNORECASE
+                            ):
+                                break
+                            if candidate:
+                                table_lines.append(candidate)
+                        if len(table_lines) > 1:
+                            tables.append(
+                                {
+                                    "page_number": page_index + 1,
+                                    "content": "\n".join(table_lines),
+                                }
+                            )
+
+                tables.extend(page_tables)
+
+        return "\n".join(text_parts).strip(), tables
+    except Exception as exc:
         raise FileParsingError(f"Could not read PDF: {exc}") from exc
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
-    import io
     try:
         doc = Document(io.BytesIO(file_bytes))
         return "\n".join(p.text for p in doc.paragraphs).strip()
@@ -73,13 +128,6 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
 
 
 def detect_structure(raw_text: str) -> dict:
-    """
-    Very lightweight structure detection: scans line-by-line for
-    heading-shaped lines (especially ones matching common paper section
-    names) and buckets the text under them. Good enough for Track D's
-    "section length breakdown" chart and for giving Track C something
-    to chunk on later — not a substitute for real layout parsing.
-    """
     lines = raw_text.splitlines()
     sections: dict[str, list[str]] = {}
     current_section = "preamble"
@@ -90,8 +138,11 @@ def detect_structure(raw_text: str) -> dict:
         if not stripped:
             continue
         match = _HEADING_RE.match(stripped)
+        normalized_heading = re.sub(
+            r"^\s*(?:\d+(?:\.\d+)*|[IVX]+)[\s.)-]+", "", stripped, flags=re.IGNORECASE
+        ).strip(" .:").lower()
         looks_like_heading = bool(match) and (
-            stripped.lower().strip(" .:0123456789ivx") in _COMMON_SECTION_NAMES
+            normalized_heading in _COMMON_SECTION_NAMES
             or (len(stripped) < 60 and stripped.isupper())
         )
         if looks_like_heading:
@@ -108,10 +159,11 @@ def detect_structure(raw_text: str) -> dict:
 
 
 def parse_file(filename: str, file_bytes: bytes) -> ParsedPaper:
-    """Top-level entry point used by the /upload route."""
     lower = filename.lower()
+    tables: list[dict] = []
+
     if lower.endswith(".pdf"):
-        raw_text = extract_text_from_pdf(file_bytes)
+        raw_text, tables = extract_text_and_tables_from_pdf(file_bytes)
     elif lower.endswith(".docx") or lower.endswith(".doc"):
         raw_text = extract_text_from_docx(file_bytes)
     else:
@@ -120,10 +172,8 @@ def parse_file(filename: str, file_bytes: bytes) -> ParsedPaper:
         )
 
     if not raw_text or len(raw_text.split()) < 20:
-        # Handles the "scanned/image-only PDF, no extractable text" case
-        # from the reliability checklist explicitly, rather than silently
-        # returning an empty summary later.
         return ParsedPaper(raw_text=raw_text, structure={}, status="empty_text")
 
     structure = detect_structure(raw_text)
+    structure["tables"] = tables
     return ParsedPaper(raw_text=raw_text, structure=structure, status="ready")
