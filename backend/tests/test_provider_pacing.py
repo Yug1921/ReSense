@@ -71,6 +71,55 @@ class ProviderPacingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(crossref_calls), R._MAX_ATTEMPTS)
         self.assertEqual(result["status"], "unavailable")
 
+    async def test_long_retry_after_stops_calling_host_for_the_run(self):
+        calls = []
+
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(429, headers={"Retry-After": "40455"}, request=request)
+
+        pacer = R._HostPacer(2, 0.0)
+        async with _paced_client(handler, {"api.openalex.org": pacer}) as client:
+            first = await R._get_with_retries(client, R._OPENALEX_URL)
+            with self.assertRaises(httpx.TransportError):
+                await R._get_with_retries(client, R._OPENALEX_URL)
+        # No retries, no 30s waits: one request, then the host is skipped.
+        self.assertEqual(first.status_code, 429)
+        self.assertEqual(len(calls), 1)
+
+    async def test_unreachable_host_is_skipped_after_repeated_failures(self):
+        calls = []
+
+        def handler(request):
+            calls.append(request)
+            raise httpx.ConnectError("refused", request=request)
+
+        pacer = R._HostPacer(1, 0.0)
+        with mock.patch.object(R.asyncio, "sleep", new=mock.AsyncMock()):
+            async with _paced_client(handler, {"api.crossref.org": pacer}) as client:
+                for _ in range(R._HOST_FAILURE_LIMIT + 2):
+                    with self.assertRaises(httpx.TransportError):
+                        await R._get_with_retries(client, f"{R._CROSSREF_URL}/works")
+        self.assertEqual(len(calls), R._HOST_FAILURE_LIMIT * R._MAX_ATTEMPTS)
+
+    async def test_success_resets_failure_count(self):
+        outcomes = iter(["fail", "ok", "fail", "fail", "ok"])
+
+        def handler(request):
+            if next(outcomes) == "fail":
+                raise httpx.ConnectError("refused", request=request)
+            return httpx.Response(200, json={}, request=request)
+
+        pacer = R._HostPacer(1, 0.0)
+        with mock.patch.object(R, "_MAX_ATTEMPTS", 1), mock.patch.object(R, "_HOST_FAILURE_LIMIT", 3):
+            async with _paced_client(handler, {"api.crossref.org": pacer}) as client:
+                for _ in range(5):
+                    try:
+                        await R._get_with_retries(client, f"{R._CROSSREF_URL}/works")
+                    except httpx.TransportError:
+                        pass
+        self.assertIsNone(pacer.unavailable_reason)
+
     async def test_empty_mailto_is_not_sent_to_crossref(self):
         seen = []
 

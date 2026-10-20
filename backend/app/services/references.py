@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 
 
 _DOI_RE = re.compile(r"""10\.\d{4,9}/[^\s"<>]+""", re.IGNORECASE)
-_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}(?=[a-z]?\b)")
 _REFERENCE_MARKER_RE = re.compile(r"(?m)^\s*\[(\d+)\]\s*")
 _NUMBERED_REFERENCE_RE = re.compile(r"(?m)^\s*(\d+)[.)]\s+")
 _PLAIN_NUMBERED_REFERENCE_RE = re.compile(r"(?m)^\s*(\d{1,3})\s+(?=[A-Z][A-Za-z])")
@@ -46,6 +46,9 @@ _NEURIPS_URL = "https://proceedings.neurips.cc"
 _NEURIPS_YEAR_URL = f"{_NEURIPS_URL}/paper/{{year}}"
 _MAX_ATTEMPTS = 3
 _MAX_RETRY_DELAY = 30.0
+# After this many requests to one host fail outright (all retries spent on
+# network errors), stop calling that host for the rest of the run.
+_HOST_FAILURE_LIMIT = 3
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +65,8 @@ class _HostPacer:
         self._min_interval = min_interval
         self._next_start = 0.0
         self._cooldown_until = 0.0
+        self._failures = 0
+        self.unavailable_reason: str | None = None
 
     async def __aenter__(self) -> "_HostPacer":
         await self._semaphore.acquire()
@@ -82,6 +87,19 @@ class _HostPacer:
 
     def cool_down(self, seconds: float) -> None:
         self._cooldown_until = max(self._cooldown_until, time.monotonic() + seconds)
+
+    def give_up(self, reason: str) -> None:
+        if self.unavailable_reason is None:
+            logger.warning("Skipping %s for the rest of this run", reason)
+        self.unavailable_reason = reason
+
+    def record_success(self) -> None:
+        self._failures = 0
+
+    def record_failure(self, host: str) -> None:
+        self._failures += 1
+        if self._failures >= _HOST_FAILURE_LIMIT:
+            self.give_up(f"{host}: unreachable after {self._failures} failed requests")
 
 
 # Pacers live per HTTP client so each report run (and each test event loop)
@@ -106,6 +124,8 @@ def _provider_pacers(polite: bool) -> dict[str, _HostPacer]:
 
 
 class _NoPacer:
+    unavailable_reason = None
+
     async def __aenter__(self) -> "_NoPacer":
         return self
 
@@ -113,6 +133,15 @@ class _NoPacer:
         return None
 
     def cool_down(self, seconds: float) -> None:
+        return None
+
+    def give_up(self, reason: str) -> None:
+        return None
+
+    def record_success(self) -> None:
+        return None
+
+    def record_failure(self, host: str) -> None:
         return None
 
 
@@ -123,12 +152,17 @@ def _pacer_for(client: httpx.AsyncClient, url: str) -> "_HostPacer | _NoPacer":
     return pacers.get(httpx.URL(url).host) or _NoPacer()
 
 
-def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+def _retry_after(response: httpx.Response | None) -> float | None:
     retry_after = response.headers.get("Retry-After") if response is not None else None
     try:
-        delay = max(0.0, float(retry_after)) if retry_after else 2**attempt
+        return max(0.0, float(retry_after)) if retry_after else None
     except ValueError:
-        delay = 2**attempt
+        return None
+
+
+def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+    retry_after = _retry_after(response)
+    delay = retry_after if retry_after is not None else 2**attempt
     return min(delay, _MAX_RETRY_DELAY)
 
 
@@ -270,13 +304,40 @@ def extract_reference_title(ref_text: str) -> str:
     if not year_match:
         return cleaned
 
-    title_region = cleaned[year_match.end():].strip(" .,:;-")
+    # Skip a disambiguation suffix such as the "a" in "2018a."
+    title_region = re.sub(r"^[a-z]\b", "", cleaned[year_match.end():]).strip(" .,:;-")
     title_region = re.split(r"\bdoi\s*:", title_region, maxsplit=1, flags=re.IGNORECASE)[0]
-    title_region = re.split(r"\barxiv\s*:", title_region, maxsplit=1, flags=re.IGNORECASE)[0]
+    title_region = re.split(r"\barxiv\b", title_region, maxsplit=1, flags=re.IGNORECASE)[0]
     sentence_boundary = re.search(r"\.\s+(?=[A-Z])", title_region)
     title = title_region[:sentence_boundary.start()] if sentence_boundary else title_region
     title = re.sub(r"\s+", " ", title).strip(" .,:;")
+    if not title:
+        split = _authors_then_title(cleaned)
+        if split:
+            return split[1]
     return title or cleaned
+
+
+# "I. J. Goodfellow, ..., and Y. Bengio. Maxout networks. arXiv:..., 2013."
+# (CVPR/IEEE style): the year trails, so the author block ends at the first
+# period after a full surname rather than at the year.
+_AUTHOR_BLOCK_END_RE = re.compile(r"(?<=[A-Za-zÀ-ÿ][a-zà-ÿ])\.\s+(?=[A-Z0-9\"“])")
+_TITLE_END_RE = re.compile(r"[.?!]\s+(?=[A-Z])|,?\s*\barxiv\s*:|[.?!]?\s*$", re.IGNORECASE)
+
+
+def _authors_then_title(cleaned: str) -> tuple[str, str] | None:
+    block_end = _AUTHOR_BLOCK_END_RE.search(cleaned)
+    if not block_end:
+        return None
+    rest = cleaned[block_end.end():]
+    title_end = _TITLE_END_RE.search(rest)
+    title = rest[:title_end.start()] if title_end else rest
+    if title_end and title_end.group(0)[:1] in "?!":
+        title += title_end.group(0)[0]
+    title = re.sub(r"\s+", " ", title).strip(" .,:;\"“”")
+    if not title:
+        return None
+    return cleaned[:block_end.start()], title
 
 
 def _normalize_doi(value: str | None) -> str | None:
@@ -349,12 +410,22 @@ def _reference_metadata(ref_text: str) -> ReferenceMetadata:
     year_match = _YEAR_RE.search(cleaned)
     year = int(year_match.group(0)) if year_match else None
     prefix = cleaned[:year_match.start()] if year_match else ""
-    author_parts = re.split(r"\s+(?:and|&)\s+|,\s*(?=[A-Z][a-z]+[, ])", prefix)
+    if year_match and not cleaned[year_match.end():].strip(" .,:;-"):
+        split = _authors_then_title(cleaned)
+        if split:
+            prefix = split[0]
+    author_parts = re.split(
+        r"\s+(?:and|&)\s+|,\s*(?=[A-Z][a-z]+[-, ])|,\s*(?=[A-Z]\.)", prefix
+    )
     surnames = []
     for part in author_parts:
-        match = re.search(r"\b([A-Z][A-Za-zÀ-ÿ'’-]+)(?:,|$|\s)", part.strip())
-        if match:
-            surname = _surname(match.group(1))
+        part = part.strip()
+        words = re.findall(r"[A-Z][A-Za-zÀ-ÿ'’-]+", part)
+        if words:
+            # "Surname, I." leads with the surname; "First Last" and
+            # "I. J. Last" end with it.
+            leading = re.match(r"[A-Z][A-Za-zÀ-ÿ'’-]+,", part)
+            surname = _surname(words[0] if leading else words[-1])
             if surname and surname not in surnames:
                 surnames.append(surname)
     doi_match = _DOI_RE.search(cleaned)
@@ -379,7 +450,11 @@ def _reference_metadata(ref_text: str) -> ReferenceMetadata:
         document_type = "journal/article"
     title = extract_reference_title(ref_text)
     title = re.sub(r"\bdoi\s*:?.*$", "", title, flags=re.IGNORECASE).strip(" .,:;")
-    tail = cleaned[year_match.end():].lstrip(" .,:;-") if year_match else cleaned
+    tail = (
+        re.sub(r"^[a-z]\b", "", cleaned[year_match.end():]).lstrip(" .,:;-")
+        if year_match
+        else cleaned
+    )
     venue = None
     boundary = re.search(r"\.\s+(?=[A-Z])", tail)
     if boundary:
@@ -1109,15 +1184,24 @@ async def _get_with_retries(
     host = httpx.URL(url).host
     last_response: httpx.Response | None = None
     last_error: Exception | None = None
+    if pacer.unavailable_reason:
+        raise httpx.TransportError(pacer.unavailable_reason)
     for attempt in range(_MAX_ATTEMPTS):
         try:
             async with pacer:
                 response = await client.get(url, params=params)
             last_response = response
             if response.status_code not in (429,) and response.status_code < 500:
+                pacer.record_success()
                 return response
             delay = _retry_delay(response, attempt)
             if response.status_code == 429:
+                retry_after = _retry_after(response)
+                if retry_after is not None and retry_after > _MAX_RETRY_DELAY:
+                    # The provider wants us gone for longer than a report can
+                    # wait (e.g. a daily quota); stop calling it this run.
+                    pacer.give_up(f"{host}: rate limited, Retry-After {retry_after:.0f}s")
+                    return response
                 pacer.cool_down(delay)
             if attempt == _MAX_ATTEMPTS - 1:
                 break
@@ -1138,6 +1222,7 @@ async def _get_with_retries(
 
     if last_response is not None:
         return last_response
+    pacer.record_failure(host)
     raise httpx.TransportError(f"{host} request failed after retries") from last_error
 
 
