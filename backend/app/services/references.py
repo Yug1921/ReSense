@@ -4,7 +4,9 @@ import asyncio
 import html
 import logging
 import re
+import time
 import unicodedata
+import weakref
 import xml.etree.ElementTree as ET
 from difflib import SequenceMatcher
 from dataclasses import dataclass
@@ -43,7 +45,91 @@ _JMLR_VOLUME_URL = f"{_JMLR_URL}/papers/v{{volume}}/"
 _NEURIPS_URL = "https://proceedings.neurips.cc"
 _NEURIPS_YEAR_URL = f"{_NEURIPS_URL}/paper/{{year}}"
 _MAX_ATTEMPTS = 3
+_MAX_RETRY_DELAY = 30.0
 logger = logging.getLogger(__name__)
+
+
+class _HostPacer:
+    """Caps concurrency and request rate for one host, shared by all workers.
+
+    A 429 from any worker pauses every worker for that host, so retries do not
+    keep hammering a provider that has already asked us to slow down.
+    """
+
+    def __init__(self, concurrency: int, min_interval: float) -> None:
+        self._semaphore = asyncio.Semaphore(concurrency)
+        self._lock = asyncio.Lock()
+        self._min_interval = min_interval
+        self._next_start = 0.0
+        self._cooldown_until = 0.0
+
+    async def __aenter__(self) -> "_HostPacer":
+        await self._semaphore.acquire()
+        try:
+            async with self._lock:
+                now = time.monotonic()
+                start = max(now, self._next_start, self._cooldown_until)
+                self._next_start = start + self._min_interval
+            if start > now:
+                await asyncio.sleep(start - now)
+        except BaseException:
+            self._semaphore.release()
+            raise
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        self._semaphore.release()
+
+    def cool_down(self, seconds: float) -> None:
+        self._cooldown_until = max(self._cooldown_until, time.monotonic() + seconds)
+
+
+# Pacers live per HTTP client so each report run (and each test event loop)
+# gets fresh asyncio primitives. Clients without pacers are not throttled.
+_CLIENT_PACERS: "weakref.WeakKeyDictionary[httpx.AsyncClient, dict[str, _HostPacer]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _provider_pacers(polite: bool) -> dict[str, _HostPacer]:
+    # Crossref (from Dec 2025): query requests are limited to 1/s with 1
+    # concurrent request on the public pool, 3/s with 3 concurrent on the
+    # polite pool (requests carrying a mailto). arXiv asks for at most one
+    # API request every 3 seconds. JMLR/NeurIPS are plain websites.
+    return {
+        "api.crossref.org": _HostPacer(3, 0.34) if polite else _HostPacer(1, 1.0),
+        "api.openalex.org": _HostPacer(2, 0.2),
+        "export.arxiv.org": _HostPacer(1, 3.0),
+        "www.jmlr.org": _HostPacer(1, 1.0),
+        "proceedings.neurips.cc": _HostPacer(1, 1.0),
+    }
+
+
+class _NoPacer:
+    async def __aenter__(self) -> "_NoPacer":
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        return None
+
+    def cool_down(self, seconds: float) -> None:
+        return None
+
+
+def _pacer_for(client: httpx.AsyncClient, url: str) -> "_HostPacer | _NoPacer":
+    pacers = _CLIENT_PACERS.get(client)
+    if not pacers:
+        return _NoPacer()
+    return pacers.get(httpx.URL(url).host) or _NoPacer()
+
+
+def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After") if response is not None else None
+    try:
+        delay = max(0.0, float(retry_after)) if retry_after else 2**attempt
+    except ValueError:
+        delay = 2**attempt
+    return min(delay, _MAX_RETRY_DELAY)
 
 
 @dataclass
@@ -1019,39 +1105,40 @@ def _result(
 async def _get_with_retries(
     client: httpx.AsyncClient, url: str, params: dict[str, Any] | None = None
 ) -> httpx.Response:
+    pacer = _pacer_for(client, url)
+    host = httpx.URL(url).host
     last_response: httpx.Response | None = None
     last_error: Exception | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            response = await client.get(url, params=params)
+            async with pacer:
+                response = await client.get(url, params=params)
             last_response = response
             if response.status_code not in (429,) and response.status_code < 500:
                 return response
+            delay = _retry_delay(response, attempt)
+            if response.status_code == 429:
+                pacer.cool_down(delay)
             if attempt == _MAX_ATTEMPTS - 1:
                 break
             logger.warning(
-                "Crossref returned %s; retry %d/%d",
+                "%s returned %s; retry %d/%d in %.1fs",
+                host,
                 response.status_code,
                 attempt + 1,
                 _MAX_ATTEMPTS,
+                delay,
             )
-            retry_after = response.headers.get("Retry-After")
-            try:
-                delay = max(0.0, float(retry_after)) if retry_after else 2**attempt
-            except ValueError:
-                delay = 2**attempt
-            delay = min(delay, 30.0)
             await asyncio.sleep(delay)
         except httpx.TransportError as exc:
             last_error = exc
             if attempt == _MAX_ATTEMPTS - 1:
                 break
-            delay = min(2**attempt, 30.0)
-            await asyncio.sleep(delay)
+            await asyncio.sleep(_retry_delay(None, attempt))
 
     if last_response is not None:
         return last_response
-    raise httpx.TransportError("Crossref request failed after retries") from last_error
+    raise httpx.TransportError(f"{host} request failed after retries") from last_error
 
 
 def _unavailable(raw: str, detail: str) -> dict[str, Any]:
@@ -1459,7 +1546,7 @@ async def _verify_reference_primary(client: httpx.AsyncClient, ref_text: str, ma
                 params={
                     "query.bibliographic": f"{metadata.title} {metadata.first_author or ''}"[:300],
                     "rows": 5,
-                    "mailto": mailto,
+                    **({"mailto": mailto} if mailto else {}),
                 },
             )
             if response.status_code >= 400:
@@ -1660,8 +1747,11 @@ async def verify_reference(client: httpx.AsyncClient, ref_text: str, mailto: str
 async def verify_all(refs: list[str], mailto: str) -> list[dict]:
     """Verify references with one shared client and polite concurrency."""
     headers = {"User-Agent": f"ReSense/1.0 (mailto:{mailto})"} if mailto else {}
-    semaphore = asyncio.Semaphore(2)
+    # Per-host pacers below enforce each provider's limits; this only bounds
+    # how many references are in flight at once.
+    semaphore = asyncio.Semaphore(4)
     async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
+        _CLIENT_PACERS[client] = _provider_pacers(polite=bool(mailto))
         async def verify(index: int, reference: str) -> dict:
             async with semaphore:
                 try:
