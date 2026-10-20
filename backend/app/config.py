@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # App
     max_upload_mb: int = 20
     allowed_origins: str = "http://localhost:3000"
+    crossref_mailto: str = ""
 
     @property
     def allowed_origins_list(self) -> list[str]:

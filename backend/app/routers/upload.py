@@ -6,6 +6,9 @@ dedupes on file hash, and persists everything to Supabase keyed by a
 new paper_id. Every other feature reads from this cached row and never
 re-touches the raw file.
 """
+import socket
+
+import httpx
 from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from app.config import settings
@@ -46,13 +49,22 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
     file_hash = compute_file_hash(file_bytes)
-    supabase = get_supabase()
+    try:
+        supabase = get_supabase()
+        existing = (
+            supabase.table(PAPERS_TABLE).select("*").eq("file_hash", file_hash).limit(1).execute()
+        )
+    except (OSError, socket.gaierror, httpx.TransportError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The paper database is unreachable. Check SUPABASE_URL in "
+                "backend/.env and make sure it is the URL of an active Supabase project."
+            ),
+        ) from exc
 
     # Dedup: reuse the existing paper_id instead of reprocessing (see
     # reliability checklist — "duplicate upload of the same file").
-    existing = (
-        supabase.table(PAPERS_TABLE).select("*").eq("file_hash", file_hash).limit(1).execute()
-    )
     if existing.data:
         row = existing.data[0]
         if row["status"] == "ready" and filename.lower().endswith(".pdf"):

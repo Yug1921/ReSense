@@ -13,6 +13,7 @@ ANALYSIS_TABLE = "analysis"
 FIGURES_TABLE = "figures"
 FIGURES_BUCKET = "paper-figures"
 CHAT_MESSAGES_TABLE = "chat_messages"
+INTEGRITY_TABLE = "integrity_reports"
 
 
 @lru_cache

@@ -129,3 +129,32 @@ class FiguresResponse(BaseModel):
     cached: bool = Field(
         description="True if every figure already had a caption; False if at least one was just captioned."
     )
+
+
+# --- Reference integrity ----------------------------------------------------
+
+class ReferenceItem(BaseModel):
+    index: int
+    raw: str
+    status: Literal["verified", "uncertain", "not_found", "unavailable"]
+    similarity: float
+    matched_title: Optional[str] = None
+    matched_doi: Optional[str] = None
+    matched_year: Optional[int] = None
+    error: Optional[str] = None
+
+
+class ReferenceCheckRequest(BaseModel):
+    paper_id: str
+    force: bool = False
+
+
+class ReferenceCheckResponse(BaseModel):
+    paper_id: str
+    total: int
+    verified: int
+    uncertain: int
+    not_found: int
+    unavailable: int = 0
+    items: list[ReferenceItem]
+    cached: bool

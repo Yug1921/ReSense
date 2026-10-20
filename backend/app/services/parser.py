@@ -1,10 +1,16 @@
 import hashlib
 import io
+import importlib
 import re
 from dataclasses import dataclass, field
 
 import pdfplumber
 from docx import Document
+
+try:
+    fitz = importlib.import_module("fitz")
+except ImportError:
+    fitz = None
 
 _HEADING_RE = re.compile(
     r"^\s*(?:\d+(?:\.\d+)*\.?|[IVX]+\.)?\s*"
@@ -15,7 +21,8 @@ _COMMON_SECTION_NAMES = {
     "method", "methods", "materials and methods", "experiments", "results",
     "discussion", "conclusion", "conclusions", "future work", "references",
     "acknowledgments", "acknowledgements", "limitations", "definitions",
-    "evaluation", "datasets", "analysis",
+    "evaluation", "datasets", "analysis", "bibliography", "works cited",
+    "literature cited",
 }
 _TABLE_CAPTION_RE = re.compile(
     r"^\s*table\s+\d+[a-z]?\b.*$", re.IGNORECASE
@@ -58,8 +65,12 @@ def extract_text_and_tables_from_pdf(file_bytes: bytes) -> tuple[str, list[dict]
         tables: list[dict] = []
 
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            coordinate_pdf = fitz.open(stream=file_bytes, filetype="pdf") if fitz else None
             for page_index, page in enumerate(pdf.pages):
-                text_parts.append(page.extract_text() or "")
+                if coordinate_pdf is not None:
+                    text_parts.append(_extract_page_text_in_reading_order(coordinate_pdf[page_index]))
+                else:
+                    text_parts.append(page.extract_text() or "")
 
                 page_tables: list[dict] = []
                 for raw_table in page.extract_tables():
@@ -69,7 +80,7 @@ def extract_text_and_tables_from_pdf(file_bytes: bytes) -> tuple[str, list[dict]
                         if any((cell or "").strip() for cell in row)
                     ]
                     # pdfplumber occasionally mis-detects a paragraph of
-                    # body text as a fake 1-column "table" — a real table
+                    # body text as a misdetected 1-column "table" — a real table
                     # needs at least 2 rows and 2 columns to count.
                     if len(cleaned_rows) < 2 or len(cleaned_rows[0]) < 2:
                         continue
@@ -113,10 +124,205 @@ def extract_text_and_tables_from_pdf(file_bytes: bytes) -> tuple[str, list[dict]
                             )
 
                 tables.extend(page_tables)
+            if coordinate_pdf is not None:
+                coordinate_pdf.close()
 
-        return "\n".join(text_parts).strip(), tables
+        return "\n".join(_remove_repeated_edge_lines(text_parts)).strip(), tables
     except Exception as exc:
         raise FileParsingError(f"Could not read PDF: {exc}") from exc
+
+
+def _extract_page_text_in_reading_order(page: object) -> str:
+    """Rebuild page text using per-page geometry and normal column order."""
+    lines = _extract_coordinate_lines(page)
+    if not lines:
+        return ""
+
+    page_width = page.rect.width  # type: ignore[attr-defined]
+    page_height = getattr(page.rect, "height", None)  # type: ignore[attr-defined]
+    if page_height is None:
+        page_height = page.rect.y1 if hasattr(page.rect, "y1") else 800  # type: ignore[attr-defined]
+    lines = [
+        line
+        for line in lines
+        if not _is_centered_page_footer(line, page_width, page_height)
+    ]
+    if not lines:
+        return ""
+
+    split = _detect_column_split(lines, page_width)
+    if split is None:
+        lines = _merge_line_fragments(lines)
+        return "\n".join(line[4] for line in sorted(lines, key=lambda item: (item[1], item[0])))
+
+    lines = _merge_line_fragments(lines, split)
+    column_lines = [line for line in lines if line[2] - line[0] < page_width * 0.78]
+    left = [line for line in column_lines if (line[0] + line[2]) / 2 < split]
+    right = [line for line in column_lines if (line[0] + line[2]) / 2 >= split]
+    full_width = [line for line in lines if line not in column_lines]
+    ordered = sorted(full_width, key=lambda item: (item[1], item[0]))
+    if left and right:
+        first_column_y = min(line[1] for line in left + right)
+        last_column_y = max(line[3] for line in left + right)
+        before = [line for line in ordered if line[3] <= first_column_y]
+        after = [line for line in ordered if line[1] >= last_column_y]
+        middle = [line for line in ordered if line not in before and line not in after]
+        ordered_lines = (
+            sorted(before, key=lambda item: (item[1], item[0]))
+            + sorted(left, key=lambda item: (item[1], item[0]))
+            + sorted(right, key=lambda item: (item[1], item[0]))
+            + sorted(middle, key=lambda item: (item[1], item[0]))
+            + sorted(after, key=lambda item: (item[1], item[0]))
+        )
+        return "\n".join(line[4] for line in ordered_lines)
+    return "\n".join(line[4] for line in sorted(lines, key=lambda item: (item[1], item[0])))
+
+
+def _merge_line_fragments(
+    lines: list[tuple[float, float, float, float, str]],
+    split: float | None = None,
+) -> list[tuple[float, float, float, float, str]]:
+    """Merge same-column fragments that PyMuPDF reports as separate lines."""
+    rows: list[list[tuple[float, float, float, float, str]]] = []
+    for line in sorted(lines, key=lambda item: (item[1], item[0])):
+        if rows and abs(rows[-1][0][1] - line[1]) <= 1.5:
+            rows[-1].append(line)
+        else:
+            rows.append([line])
+
+    merged: list[tuple[float, float, float, float, str]] = []
+    for row in rows:
+        for line in sorted(row, key=lambda item: item[0]):
+            if not merged or abs(merged[-1][1] - line[1]) > 1.5:
+                merged.append(line)
+                continue
+            previous = merged[-1]
+            same_region = split is None or (
+                ((previous[0] + previous[2]) / 2 < split)
+                == ((line[0] + line[2]) / 2 < split)
+            )
+            close_horizontally = 0 <= line[0] - previous[2] <= 14
+            if same_region and close_horizontally:
+                merged[-1] = (
+                    previous[0],
+                    min(previous[1], line[1]),
+                    line[2],
+                    max(previous[3], line[3]),
+                    f"{previous[4]} {line[4]}",
+                )
+            else:
+                merged.append(line)
+    return merged
+
+
+def _extract_coordinate_lines(page: object) -> list[tuple[float, float, float, float, str]]:
+    """Return non-empty PDF text lines as (x0, y0, x1, y1, text)."""
+    try:
+        blocks = page.get_text("dict")["blocks"]  # type: ignore[attr-defined]
+        lines = []
+        for block in blocks:
+            for line in block.get("lines", []):
+                spans = line.get("spans", [])
+                text = " ".join(str(span.get("text", "")).strip() for span in spans).strip()
+                text = re.sub(r"\s+", " ", text)
+                if text:
+                    x0, y0, x1, y1 = line["bbox"]
+                    lines.append((float(x0), float(y0), float(x1), float(y1), text))
+        if lines:
+            return lines
+    except (AttributeError, KeyError, TypeError):
+        pass
+
+    words = page.get_text("words")  # type: ignore[attr-defined]
+    grouped: list[list[tuple[float, float, float, float, str]]] = []
+    for word in sorted(words or [], key=lambda item: (item[1], item[0])):
+        x0, y0, x1, y1, text = word[:5]
+        for current in grouped:
+            if abs(current[0][1] - y0) <= 3:
+                current.append((x0, y0, x1, y1, str(text)))
+                break
+        else:
+            grouped.append([(x0, y0, x1, y1, str(text))])
+    return [
+        (
+            min(word[0] for word in line),
+            min(word[1] for word in line),
+            max(word[2] for word in line),
+            max(word[3] for word in line),
+            " ".join(word[4] for word in sorted(line, key=lambda item: item[0])),
+        )
+        for line in grouped
+    ]
+
+
+def _detect_column_split(
+    lines: list[tuple[float, float, float, float, str]], page_width: float
+) -> float | None:
+    """Find the whitespace gap nearest the page center between two columns."""
+    column_lines = [
+        line for line in lines if line[2] - line[0] < page_width * 0.78
+    ]
+    if len(column_lines) < 6:
+        return None
+
+    page_center = page_width / 2
+    edge_candidates = sorted(
+        {
+            round(edge, 1)
+            for line in column_lines
+            for edge in (line[0], line[2])
+        }
+    )
+    candidates: list[tuple[float, float]] = []
+    for left_edge, right_edge in zip(edge_candidates, edge_candidates[1:]):
+        gap = right_edge - left_edge
+        if gap < 8:
+            continue
+        split = (left_edge + right_edge) / 2
+        left_count = sum(
+            (line[0] + line[2]) / 2 < split for line in column_lines
+        )
+        right_count = sum(
+            (line[0] + line[2]) / 2 >= split for line in column_lines
+        )
+        if left_count >= 3 and right_count >= 3:
+            candidates.append((abs(split - page_center), split))
+
+    if not candidates:
+        return None
+    return min(candidates)[1]
+
+
+def _is_centered_page_footer(
+    line: tuple[float, float, float, float, str],
+    page_width: float,
+    page_height: float,
+) -> bool:
+    """Exclude centered page-number/footer blocks using geometry, not digits."""
+    x0, y0, x1, y1, _ = line
+    line_center = (x0 + x1) / 2
+    return (
+        y0 >= page_height * 0.9
+        and abs(line_center - page_width / 2) <= page_width * 0.12
+        and x1 - x0 <= page_width * 0.16
+    )
+
+
+def _remove_repeated_edge_lines(page_texts: list[str]) -> list[str]:
+    """Remove exact repeated running headers/footers without dropping body text."""
+    edge_counts: dict[str, int] = {}
+    for text in page_texts:
+        edge_lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for line in edge_lines[:2] + edge_lines[-2:]:
+            if len(line) <= 120:
+                edge_counts[line] = edge_counts.get(line, 0) + 1
+    repeated = {line for line, count in edge_counts.items() if count >= 2}
+    if not repeated:
+        return page_texts
+    return [
+        "\n".join(line for line in text.splitlines() if line.strip() not in repeated)
+        for text in page_texts
+    ]
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:

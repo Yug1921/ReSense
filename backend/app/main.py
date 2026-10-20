@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import upload, summarize, ask, analyze, session, figures
+from app.routers import upload, summarize, ask, analyze, session, figures, integrity
 
 app = FastAPI(title="Re-sense API", version="0.1.0")
 
@@ -49,6 +49,7 @@ app.include_router(ask.router)
 app.include_router(analyze.router)
 app.include_router(session.router)
 app.include_router(figures.router)
+app.include_router(integrity.router)
 
 
 @app.get("/health", tags=["health"])
