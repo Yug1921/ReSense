@@ -120,6 +120,15 @@ class ProviderPacingTests(unittest.IsolatedAsyncioTestCase):
                         pass
         self.assertIsNone(pacer.unavailable_reason)
 
+    async def test_crossref_candidate_survives_openalex_outage(self):
+        crossref = R._result("ref", "uncertain", similarity=0.9, title="Candidate")
+        openalex = R._unavailable("ref", "OpenAlex returned 429 Too Many Requests")
+        with mock.patch.object(R, "_verify_reference_primary", new=mock.AsyncMock(return_value=crossref)), \
+                mock.patch.object(R, "_verify_by_openalex", new=mock.AsyncMock(return_value=openalex)):
+            result = await R.verify_reference(None, "A. Author. A study of things. 2020.", "")
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["matched_title"], "Candidate")
+
     async def test_empty_mailto_is_not_sent_to_crossref(self):
         seen = []
 

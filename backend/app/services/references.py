@@ -1812,6 +1812,9 @@ async def verify_reference(client: httpx.AsyncClient, ref_text: str, mailto: str
         )
     if primary.get("conflict_fields"):
         return primary
+    if openalex.get("status") == "unavailable" and primary.get("status") == "uncertain":
+        # Keep Crossref's candidate rather than hiding it behind an OpenAlex outage.
+        return primary
     if openalex.get("status") == "verified":
         return openalex
     if primary.get("status") == "uncertain" and openalex.get("status") == "not_found":
