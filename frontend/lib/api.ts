@@ -142,3 +142,37 @@ export function uploadPaper(
 
   return { promise, abort: () => xhr.abort() };
 }
+
+export type ReferenceStatus = "verified" | "uncertain" | "not_found" | "unavailable";
+
+export type PublicationRelation = "exact" | "same_work_version" | "possible_related" | "different_work";
+
+export interface ReferenceItem {
+  index: number;
+  raw: string;
+  status: ReferenceStatus;
+  similarity: number;
+  matched_title: string | null;
+  matched_doi: string | null;
+  matched_year: number | null;
+  error: string | null;
+  source: string | null;
+  publication_relation: PublicationRelation | null;
+  match_reason: string | null;
+  conflict_fields: string[];
+}
+
+export interface ReferenceCheckResponse {
+  paper_id: string;
+  total: number;
+  verified: number;
+  uncertain: number;
+  not_found: number;
+  unavailable: number;
+  items: ReferenceItem[];
+  cached: boolean;
+}
+
+export function checkReferences(paperId: string, force = false): Promise<ReferenceCheckResponse> {
+  return postJson<ReferenceCheckResponse>("/integrity/references", { paper_id: paperId, force });
+}
