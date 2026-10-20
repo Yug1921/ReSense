@@ -1666,10 +1666,11 @@ async def verify_all(refs: list[str], mailto: str) -> list[dict]:
             async with semaphore:
                 try:
                     result = await verify_reference(client, reference, mailto)
-                    return {"index": index, **result}
-                except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                except Exception as exc:
+                    # One bad reference must never discard the rest of the report.
                     logger.warning("Reference verification failed for index %d: %s", index, exc)
-                    return _unavailable(reference, f"Reference verification failed: {exc}")
+                    result = _unavailable(reference, f"Reference verification failed: {exc}")
+                return {"index": index, **result}
 
         results = await asyncio.gather(
             *(verify(index, reference) for index, reference in enumerate(refs, start=1))

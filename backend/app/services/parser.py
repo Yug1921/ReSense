@@ -8,7 +8,7 @@ import pdfplumber
 from docx import Document
 
 try:
-    fitz = importlib.import_module("fitz")
+    fitz = importlib.import_module("pymupdf")
 except ImportError:
     fitz = None
 

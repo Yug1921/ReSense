@@ -142,6 +142,12 @@ class ReferenceItem(BaseModel):
     matched_doi: Optional[str] = None
     matched_year: Optional[int] = None
     error: Optional[str] = None
+    source: Optional[str] = None  # crossref | openalex | arxiv | jmlr | neurips
+    publication_relation: Optional[
+        Literal["exact", "same_work_version", "possible_related", "different_work"]
+    ] = None
+    match_reason: Optional[str] = None
+    conflict_fields: list[str] = Field(default_factory=list)
 
 
 class ReferenceCheckRequest(BaseModel):

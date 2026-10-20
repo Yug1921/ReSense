@@ -15,7 +15,7 @@ create table if not exists papers (
 create table if not exists summaries (
     id              uuid primary key default gen_random_uuid(),
     paper_id        uuid not null references papers(id) on delete cascade,
-    tone            text not null check (tone in ('simple', 'technical', 'connect')),
+    tone            text not null check (tone in ('academic', 'technical', 'research_insight', 'figure_table_analysis', 'critical_review')),
     content         text not null,
     generated_at    timestamptz not null default now(),
     unique (paper_id, tone)                       -- one cached summary per tone per paper
@@ -54,3 +54,11 @@ create table if not exists figures (
 );
 
 create index if not exists idx_figures_paper_id on figures(paper_id);
+
+create table if not exists integrity_reports (
+    id              uuid primary key default gen_random_uuid(),
+    paper_id        uuid not null references papers(id) on delete cascade,
+    report_json     jsonb not null,               -- cached /integrity/references response
+    generated_at    timestamptz not null default now(),
+    unique (paper_id)
+);
