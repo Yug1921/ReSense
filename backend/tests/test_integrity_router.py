@@ -153,6 +153,89 @@ class IntegrityRouterTests(unittest.TestCase):
         self.assertEqual(len(db.upserts), 1)
 
 
+    def _get(self, db):
+        with mock.patch.object(integrity, "get_supabase", return_value=db):
+            return self.client.get("/integrity/references/p1")
+
+    def test_saved_check_is_empty_until_first_run(self):
+        response = self._get(_FakeSupabase({"papers": [_paper()]}))
+        self.assertEqual(response.status_code, 204)
+
+    def test_saved_check_returns_report_without_verifying(self):
+        cached_items = [{"index": 1, "raw": "a", "status": "verified", "similarity": 1.0}]
+        db = _FakeSupabase({
+            "papers": [_paper()],
+            "integrity_reports": [{
+                "paper_id": "p1",
+                "report_json": {"items": cached_items},
+                "generated_at": "2026-10-21T10:00:00+00:00",
+            }],
+        })
+
+        async def fail_verify_all(refs, mailto, **_):
+            raise AssertionError("verify_all should not run when reading a saved check")
+
+        with mock.patch.object(integrity, "verify_all", fail_verify_all):
+            response = self._get(db)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual((body["total"], body["verified"]), (1, 1))
+        self.assertEqual(body["checked_at"], "2026-10-21T10:00:00+00:00")
+
+    def test_saved_check_of_someone_elses_paper_returns_404(self):
+        app.dependency_overrides[current_user] = lambda: CurrentUser(id="u2")
+        self.assertEqual(self._get(_FakeSupabase({"papers": [_paper()]})).status_code, 404)
+
+
+class CitedPartsTests(unittest.TestCase):
+    """Real citations from the ResNet paper's reference list."""
+
+    def test_conference_citation(self):
+        parts = integrity._cited_parts(
+            "[34] A. Romero, N. Ballas, S. E. Kahou, A. Chassang, C. Gatta, and Y. Bengio. "
+            "Fitnets: Hints for thin deep nets. In ICLR , 2015."
+        )
+        self.assertEqual(parts["cited_title"], "Fitnets: Hints for thin deep nets")
+        self.assertEqual(parts["cited_authors"], "A. Romero, N. Ballas, S. E. Kahou, A. Chassang, C. Gatta, and Y. Bengio")
+        self.assertEqual(parts["cited_venue"], "ICLR")
+
+    def test_journal_pages_and_year_are_dropped_from_venue(self):
+        parts = integrity._cited_parts(
+            "[5] M. Everingham, L. Van Gool, C. K. Williams, J. Winn, and A. Zisserman. "
+            "The Pascal Visual Object Classes (VOC) Challenge. IJCV , pages 303\u2013338, 2010."
+        )
+        self.assertEqual(parts["cited_title"], "The Pascal Visual Object Classes (VOC) Challenge")
+        self.assertEqual(parts["cited_venue"], "IJCV")
+
+    def test_volume_issue_and_pages_are_dropped_from_venue(self):
+        parts = integrity._cited_parts(
+            "[1] Y. Bengio, P. Simard, and P. Frasconi. Learning long-term dependencies with gradient "
+            "descent is difficult. IEEE Transactions on Neural Networks, 5(2):157\u2013166, 1994."
+        )
+        self.assertEqual(parts["cited_venue"], "IEEE Transactions on Neural Networks")
+
+    def test_bare_arxiv_id_becomes_venue(self):
+        parts = integrity._cited_parts(
+            "[9] I. J. Goodfellow, D. Warde-Farley, M. Mirza, A. Courville, and Y. Bengio. "
+            "Maxout networks. arXiv:1302.4389 , 2013."
+        )
+        self.assertEqual(parts["cited_title"], "Maxout networks")
+        self.assertEqual(parts["cited_venue"], "arXiv:1302.4389")
+
+    def test_thesis_keeps_its_description(self):
+        parts = integrity._cited_parts(
+            "[14] S. Hochreiter. Untersuchungen zu dynamischen neuronalen netzen. Diploma thesis, TU Munich , 1991."
+        )
+        self.assertEqual(parts["cited_authors"], "S. Hochreiter")
+        self.assertEqual(parts["cited_venue"], "Diploma thesis, TU Munich")
+
+    def test_unparseable_citation_returns_nothing(self):
+        self.assertEqual(
+            integrity._cited_parts("[1] ."),
+            {"cited_title": None, "cited_authors": None, "cited_venue": None},
+        )
+
+
 class VerifyAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_unexpected_error_keeps_index_and_other_results(self):
         async def fake_verify_reference(client, ref_text, mailto):

@@ -157,6 +157,10 @@ class ReferenceItem(BaseModel):
     ] = None
     match_reason: Optional[str] = None
     conflict_fields: list[str] = Field(default_factory=list)
+    # The citation as written in the paper, split for display (best effort).
+    cited_title: Optional[str] = None
+    cited_authors: Optional[str] = None
+    cited_venue: Optional[str] = None
 
 
 class ReferenceCheckRequest(BaseModel):
@@ -173,3 +177,4 @@ class ReferenceCheckResponse(BaseModel):
     unavailable: int = 0
     items: list[ReferenceItem]
     cached: bool
+    checked_at: Optional[str] = None

@@ -256,6 +256,10 @@ export interface ReferenceItem {
   publication_relation: PublicationRelation | null;
   match_reason: string | null;
   conflict_fields: string[];
+  // The citation as written in the paper, split for display (best effort).
+  cited_title: string | null;
+  cited_authors: string | null;
+  cited_venue: string | null;
 }
 
 export interface ReferenceCheckResponse {
@@ -267,6 +271,15 @@ export interface ReferenceCheckResponse {
   unavailable: number;
   items: ReferenceItem[];
   cached: boolean;
+  checked_at: string | null;
+}
+
+/** The last saved reference check, or null if this paper was never checked. */
+export async function getSavedReferenceCheck(paperId: string): Promise<ReferenceCheckResponse | null> {
+  const saved = await getJson<ReferenceCheckResponse | undefined>(
+    `/integrity/references/${encodeURIComponent(paperId)}`
+  );
+  return saved ?? null;
 }
 
 export function checkReferences(paperId: string, force = false): Promise<ReferenceCheckResponse> {
