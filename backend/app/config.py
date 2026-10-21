@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     openrouter_vision_fallback_models: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # Claude (paid, prepaid credits from console.anthropic.com). When a key is set,
+    # Claude answers first and the free providers below become the backup.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-haiku-5-5"
     groq_api_key: str = Field(default="", validation_alias="Groq")
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_api_key: str = Field(default="", validation_alias="Gemini")
