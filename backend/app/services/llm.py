@@ -1,8 +1,5 @@
 """
-Single, shared entry point for every text-generation call in the app.
-
-Claude answers first when ANTHROPIC_API_KEY is set; otherwise (or if Claude
-fails) the free OpenRouter / Groq / Gemini chain is tried in order.
+Single, shared entry point for every OpenRouter call in the app.
 
 Deliberately conservative: one retry with backoff, a hard timeout, and
 no fan-out of parallel calls per user action. Every feature (summarize,
@@ -12,7 +9,6 @@ app-wide.
 """
 import re
 
-import anthropic
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -85,43 +81,6 @@ async def _post_chat_completion(
     return response.json()
 
 
-_claude_client: anthropic.AsyncAnthropic | None = None
-
-
-def _claude() -> anthropic.AsyncAnthropic:
-    global _claude_client
-    if _claude_client is None:
-        _claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=60.0)
-    return _claude_client
-
-
-async def _call_claude(system_prompt: str, user_prompt: str, max_tokens: int) -> str:
-    """One Claude call. Raises LLMRequestError so the caller can fall back."""
-    try:
-        response = await _claude().messages.create(
-            model=settings.anthropic_model,
-            # Room for the model's short thinking on top of the answer itself.
-            max_tokens=max_tokens + 2000,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            # Summaries and answers are routine work: low effort keeps them fast and cheap.
-            output_config={"effort": "low"},
-        )
-    except anthropic.RateLimitError as exc:
-        raise LLMRateLimitError(f"Claude rate limit: {exc}") from exc
-    except anthropic.APIStatusError as exc:
-        raise LLMRequestError(f"Claude error {exc.status_code}: {exc.message}") from exc
-    except anthropic.APIConnectionError as exc:
-        raise LLMProviderUnavailableError(f"Claude unreachable: {exc}") from exc
-
-    if response.stop_reason == "refusal":
-        raise LLMRequestError("Claude declined this request.")
-    text = "".join(block.text for block in response.content if block.type == "text").strip()
-    if not text:
-        raise LLMRequestError(f"Claude returned no text (stop reason: {response.stop_reason}).")
-    return text
-
-
 async def call_openrouter(
     system_prompt: str,
     user_prompt: str,
@@ -143,12 +102,6 @@ async def call_openrouter(
     }
 
     last_error: Exception | None = None
-    if settings.anthropic_api_key:
-        try:
-            return await _call_claude(system_prompt, user_prompt, max_tokens)
-        except LLMRequestError as exc:
-            last_error = exc  # fall back to the free providers
-
     for provider in settings.provider_chain:
         try:
             data = await _post_chat_completion(
