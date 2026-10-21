@@ -197,6 +197,17 @@ def _section_text(section: Any) -> str:
     return ""
 
 
+# PDF extraction emits diacritics as separate spacing marks ("T¨ackstr¨om").
+_SPACING_DIACRITICS = {"¨": "\u0308", "´": "\u0301", "ˆ": "\u0302", "˜": "\u0303"}
+_SPACING_DIACRITIC_RE = re.compile(r"([¨´ˆ˜])\s?([A-Za-z])")
+
+
+def _clean_reference_text(text: str) -> str:
+    """Undo PDF ligatures (ﬁ, ﬂ) and detached accents so titles and names match."""
+    text = _SPACING_DIACRITIC_RE.sub(lambda m: m.group(2) + _SPACING_DIACRITICS[m.group(1)], text)
+    return unicodedata.normalize("NFKC", text)
+
+
 def _split_references(text: str, marker_pattern: re.Pattern[str]) -> list[str]:
     matches = list(marker_pattern.finditer(text))
     if not matches:
@@ -250,7 +261,11 @@ def _split_author_year_references(text: str) -> list[str]:
             "\n".join(lines[start:end]),
         )
         normalized = re.sub(r"\s+", " ", normalized).strip()
-        if len(normalized) >= 25:
+        if entries and not _YEAR_RE.search(normalized):
+            # Every author-year entry carries a year; a chunk without one is
+            # the continuation of the previous entry (e.g. an editors line).
+            entries[-1] = f"{entries[-1]} {normalized}"
+        elif len(normalized) >= 25:
             entries.append(normalized)
     return entries
 
@@ -298,7 +313,7 @@ def extract_references(structure_json: dict, raw_text: str) -> list[str]:
             for entry in re.split(r"\n\s*\n+", reference_text)
             if len(re.sub(r"\s+", " ", entry).strip()) >= 25
         ]
-    return references[:60]
+    return [_clean_reference_text(reference) for reference in references[:60]]
 
 
 def extract_reference_title(ref_text: str) -> str:
@@ -312,8 +327,10 @@ def extract_reference_title(ref_text: str) -> str:
     title_region = re.sub(r"^[a-z]\b", "", cleaned[year_match.end():]).strip(" .,:;-")
     title_region = re.split(r"\bdoi\s*:", title_region, maxsplit=1, flags=re.IGNORECASE)[0]
     title_region = re.split(r"\barxiv\b", title_region, maxsplit=1, flags=re.IGNORECASE)[0]
-    sentence_boundary = re.search(r"\.\s+(?=[A-Z])", title_region)
+    sentence_boundary = re.search(r"[.?!]\s+(?=[A-Z])", title_region)
     title = title_region[:sentence_boundary.start()] if sentence_boundary else title_region
+    if sentence_boundary and sentence_boundary.group(0)[0] in "?!":
+        title += sentence_boundary.group(0)[0]
     title = re.sub(r"\s+", " ", title).strip(" .,:;")
     if not title:
         split = _authors_then_title(cleaned)
@@ -360,6 +377,12 @@ def extract_arxiv_id(raw_reference: str) -> str | None:
         raw_reference,
         re.IGNORECASE,
     )
+    if not match:
+        # Bare new-style id such as "1507.06228" (YYMM.NNNNN, valid month).
+        match = re.search(
+            r"(?<![\w./:-])(\d{2}(?:0[1-9]|1[0-2])\.\d{4,5}(?:v\d+)?)(?!\.?\d|\w)",
+            raw_reference,
+        )
     if not match:
         return None
     return re.sub(
@@ -444,7 +467,8 @@ def _reference_metadata(ref_text: str) -> ReferenceMetadata:
     elif isbn:
         document_type = "book"
     elif re.search(
-        r"\b(proceedings|conference|workshop|naacl|neurips|nips|inproceedings|ecml|acl|icml)\b",
+        r"\b(proceedings|conference|workshop|symposium|naacl|neurips|nips|inproceedings|ecml|acl"
+        r"|icml|iclr|cvpr|iccv|eccv|bmvc|emnlp|eacl|coling|aaai|ijcai|kdd|sigir|icassp|interspeech|tac)\b",
         lower,
     ):
         document_type = "conference/proceedings"
@@ -454,6 +478,8 @@ def _reference_metadata(ref_text: str) -> ReferenceMetadata:
         document_type = "journal/article"
     title = extract_reference_title(ref_text)
     title = re.sub(r"\bdoi\s*:?.*$", "", title, flags=re.IGNORECASE).strip(" .,:;")
+    title = re.sub(r"[\s.,]*\b\d{4}\.\d{4,5}(?:v\d+)?\b.*$", "", title).strip(" .,:;")
+    title = re.sub(r",\s*(?:19|20)\d{2}[a-z]?$", "", title).strip(" .,:;")
     tail = (
         re.sub(r"^[a-z]\b", "", cleaned[year_match.end():]).lstrip(" .,:;-")
         if year_match
@@ -598,13 +624,32 @@ def normalize_title(text: str) -> str:
     return " ".join(_WORD_RE.findall(normalized))
 
 
+_EDITION_RE = re.compile(
+    r"[,(]?\s*\b(?:\d+(?:st|nd|rd|th)|second|third|fourth|fifth|revised)\s+ed(?:ition|\.)?\)?",
+    re.IGNORECASE,
+)
+
+
 def _title_similarity(reference_title: str, candidate_title: str) -> float:
-    reference = normalize_title(reference_title)
-    candidate = normalize_title(candidate_title)
+    reference = normalize_title(_EDITION_RE.sub(" ", reference_title))
+    candidate = normalize_title(_EDITION_RE.sub(" ", candidate_title))
     if not reference or not candidate:
         return 0.0
     if reference == candidate:
         return 1.0
+    if reference.replace(" ", "") == candidate.replace(" ", ""):
+        # PDF line breaks drop hyphens: "coadaptation" vs. "co-adaptation".
+        return 1.0
+    for full, short_raw in ((reference, candidate_title), (candidate, reference_title)):
+        main_title = normalize_title(re.split(r"[:?]", _EDITION_RE.sub(" ", short_raw))[0])
+        full_main = full.split()
+        if (
+            len(main_title.split()) >= 4
+            and main_title == normalize_title(short_raw)
+            and " ".join(full_main[: len(main_title.split())]) == main_title
+        ):
+            # One record omits the subtitle after the colon.
+            return 0.9
     reference_words = set(reference.split())
     candidate_words = set(candidate.split())
     jaccard = len(reference_words & candidate_words) / len(reference_words | candidate_words)
@@ -628,13 +673,13 @@ def _document_type(item: dict[str, Any]) -> str:
     item_type = str(item.get("type") or "").lower()
     container = " ".join(item.get("container-title") or []).lower()
     doi = _normalize_doi(str(item.get("DOI") or ""))
-    if doi and doi.startswith("10.48550/arxiv."):
+    if (doi and doi.startswith("10.48550/arxiv.")) or item_type in {"preprint", "posted-content"}:
         return "preprint/arxiv"
     if "book" in item_type or item_type in {"monograph"}:
         return "book"
     if "chapter" in item_type:
         return "chapter"
-    if "proceedings" in item_type or "conference" in container:
+    if "proceedings" in item_type or "conference" in item_type or "conference" in container:
         return "conference/proceedings"
     return "journal/article"
 
@@ -666,6 +711,16 @@ def _publication_relation(
         return "exact"
 
     year_difference = abs(reference.year - matched_year)
+    strong_identity = title_score >= 0.95 and author_score >= 0.5
+    if (
+        strong_identity
+        and year_difference <= 1
+        and reference.document_type == "unknown"
+        and candidate_type == "preprint/arxiv"
+    ):
+        # An unlabeled citation of a work whose arXiv preprint predates or
+        # trails it by a year (e.g. "In ICLR, 2015" vs. arXiv 2014).
+        return "same_work_version"
     source_pair = {
         reference.document_type,
         candidate_type,
@@ -681,6 +736,10 @@ def _publication_relation(
     if plausible_source_version and year_difference <= 2:
         return "same_work_version"
     if year_difference <= 2 and author_score >= 0.5:
+        return "possible_related"
+    if strong_identity:
+        # Same title and authors years apart (re-deposits, reprints): possibly
+        # the cited work, but not evidence of a different one.
         return "possible_related"
     return "different_work"
 
@@ -1481,10 +1540,16 @@ def _candidate_result(
             + venue_score * 0.10
             + type_score * 0.05
         )
+        # Preprint, proceedings and journal records are versions of one work;
+        # only a mismatch such as book vs. article is evidence against it.
         type_conflict = (
             metadata.document_type != "unknown"
             and type_score == 0.0
             and publication_relation not in {"same_work_version", "possible_related"}
+            and not (
+                _is_version_source(metadata.document_type)
+                and _is_version_source(_document_type(item))
+            )
         )
         author_identity_confirmed = (
             not metadata.author_surnames
@@ -1531,22 +1596,24 @@ def _candidate_result(
         final_score=final_score,
         publication_relation=publication_relation,
         source=source,
-        match_reason="strong multi-signal bibliographic agreement"
-        if status == "verified"
-        else (
-            "matching record has incomplete author metadata"
-            if publication_relation == "exact"
-            else (
-            "same scholarly work found as a different preprint/publication version"
-            if publication_relation == "same_work_version"
-            else (
-                "same title but conflicting author/year metadata"
-                if publication_relation == "different_work"
-                else "possible related scholarly work with a different publication year"
-            )
-            )
-        )
+        match_reason=_match_reason(status, publication_relation, title_score, item),
     )
+
+
+def _match_reason(status: str, relation: str, title_score: float, item: dict[str, Any]) -> str:
+    if relation == "same_work_version":
+        return "same scholarly work found as a different preprint/publication version"
+    if status == "verified":
+        return "strong multi-signal bibliographic agreement"
+    if relation == "exact":
+        if not _candidate_authors(item):
+            return "matching record has incomplete author metadata"
+        return "title matches but authors, year or publication type only partly agree"
+    if relation == "possible_related":
+        return "same title found, but the record's year or authors differ from the citation"
+    if title_score >= 0.8:
+        return "same title but conflicting author/year metadata"
+    return "closest record found has a different title"
 
 
 async def _verify_by_openalex(
@@ -1555,8 +1622,12 @@ async def _verify_by_openalex(
     metadata: ReferenceMetadata,
     mailto: str,
 ) -> dict[str, Any]:
+    # OpenAlex rejects ? and * (wildcards) in a stemmed search.
+    query = re.sub(r"[?*]", " ", metadata.title)[:300].strip()
+    if not query:
+        return _result(ref_text, "not_found", source="openalex")
     params = {
-        "search": metadata.title[:300],
+        "search": query,
         "per-page": 10,
     }
     if mailto:
@@ -1594,9 +1665,14 @@ async def _verify_by_openalex(
             continue
     if not candidates:
         return _result(ref_text, "not_found", source="openalex")
+    status_rank = {"verified": 2, "uncertain": 1}
     return max(
         candidates,
-        key=lambda result: (result.get("final_score", 0.0), result.get("similarity", 0.0)),
+        key=lambda result: (
+            status_rank.get(result.get("status"), 0),
+            result.get("final_score", 0.0),
+            result.get("similarity", 0.0),
+        ),
     )
 
 
@@ -1717,6 +1793,10 @@ async def _verify_reference_primary(client: httpx.AsyncClient, ref_text: str, ma
         material_metadata_conflict = (
             type_relationship == "contradictory"
             and publication_relation not in {"same_work_version", "possible_related"}
+            and not (
+                _is_version_source(metadata.document_type)
+                and _is_version_source(_document_type(item))
+            )
         )
         if (
             publication_relation == "exact"
@@ -1778,20 +1858,8 @@ async def _verify_reference_primary(client: httpx.AsyncClient, ref_text: str, ma
             publication_relation=publication_relation,
             match_reason=(
                 "strong title, author, year, and type agreement"
-                if status == "verified"
-                else (
-                    "matching record has incomplete author metadata"
-                    if publication_relation == "exact"
-                    else (
-                    "same scholarly work found as a different preprint/publication version"
-                    if publication_relation == "same_work_version"
-                    else (
-                        "same title but conflicting author/year metadata"
-                        if publication_relation == "different_work"
-                        else "possible related scholarly work with a different publication year"
-                    )
-                    )
-                )
+                if status == "verified" and publication_relation == "exact"
+                else _match_reason(status, publication_relation, similarity, item)
             ),
             source="crossref",
         )
