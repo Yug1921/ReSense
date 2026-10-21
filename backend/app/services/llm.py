@@ -137,6 +137,17 @@ async def call_openrouter(
     estimated_tokens = (len(system_prompt) + len(user_prompt)) // 4 + max_tokens
 
     candidates = await providers.candidates(estimated_tokens)
+    choice = providers.chosen_provider.get()
+    if not candidates and choice == "groq" and estimated_tokens > providers.GROQ_MAX_REQUEST_TOKENS:
+        raise LLMRequestError(
+            "This is too long for Groq's free plan (about 8,000 tokens a minute). "
+            "Pick Automatic or Gemini in the AI menu for whole-paper tasks."
+        )
+    if not candidates and choice in providers.PROVIDERS:
+        raise LLMRequestError(
+            f"No {choice.capitalize()} model is available right now (no key, or all at their limit). "
+            "Pick Automatic in the AI menu to use the others."
+        )
     if not candidates:
         raise LLMRequestError(
             "No AI model is available: add a Gemini, Groq or OpenRouter key to backend/.env, "

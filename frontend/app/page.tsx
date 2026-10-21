@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import type { UploadResponse } from "@/lib/api";
 import { RequireAuth } from "@/components/auth/require-auth";
 import { AccountMenu } from "@/components/auth/account-menu";
+import { AiPicker } from "@/components/ai/ai-picker";
 import { Logo } from "@/components/brand/logo";
 import { UploadCard } from "@/components/upload/upload-card";
 import { PapersList } from "@/components/home/papers-list";
@@ -29,7 +30,10 @@ function Home() {
       <header className="border-b border-divider">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-10">
           <Logo />
-          <AccountMenu />
+          <div className="flex items-center gap-3">
+            <AiPicker />
+            <AccountMenu />
+          </div>
         </div>
       </header>
 

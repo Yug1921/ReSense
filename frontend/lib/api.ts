@@ -1,4 +1,5 @@
 import { getAccessToken, getSupabase, isAuthConfigured } from "@/lib/supabase";
+import { getAiChoice } from "@/lib/ai-choice";
 
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
@@ -53,7 +54,9 @@ export class ApiError extends Error {
 
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const headers: Record<string, string> = { "X-AI-Provider": getAiChoice() };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
 }
 
 // The backend refused our sign-in (expired or revoked): sign out locally and

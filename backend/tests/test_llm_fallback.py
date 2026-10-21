@@ -149,3 +149,40 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(providers.settings, "openrouter_api_key", ""):
             with self.assertRaisesRegex(llm.LLMRequestError, "add a Gemini, Groq or OpenRouter key"):
                 await llm.call_openrouter("sys", "q")
+
+
+class ChosenProviderTests(FallbackTests):
+    async def test_choice_limits_to_that_provider(self):
+        token = providers.chosen_provider.set("openrouter")
+        self.addCleanup(providers.chosen_provider.reset, token)
+        with self._respond(lambda model: llm.LLMRequestError("down") if "nemotron" in model else _ok("ok")):
+            self.assertEqual(await llm.call_openrouter("sys", "q"), "ok")
+        self.assertTrue(all(m.endswith(":free") for m in self.calls))
+
+    async def test_groq_choice_explains_long_requests(self):
+        token = providers.chosen_provider.set("groq")
+        self.addCleanup(providers.chosen_provider.reset, token)
+        with self.assertRaisesRegex(llm.LLMRequestError, "too long for Groq"):
+            await llm.call_openrouter("sys", "x" * 40_000, max_tokens=2200)
+
+    def test_safety_models_are_never_picked(self):
+        ranked = providers.rank_openrouter(
+            [{"id": "nvidia/nemotron-3.5-content-safety:free", "context_length": 128000, "pricing": {}}]
+        )
+        self.assertEqual(ranked, [])
+
+    def test_header_sets_choice_for_one_request(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        seen = []
+
+        @app.get("/_test_choice")
+        def _probe():
+            seen.append(providers.chosen_provider.get())
+            return {}
+
+        client = TestClient(app)
+        client.get("/_test_choice", headers={"X-AI-Provider": "Groq"})
+        client.get("/_test_choice", headers={"X-AI-Provider": "nonsense"})
+        client.get("/_test_choice")
+        self.assertEqual(seen, ["groq", "auto", "auto"])

@@ -13,6 +13,7 @@ import { SummaryPanel } from "@/components/summary/summary-panel";
 import { AskPanel } from "@/components/qa/ask-panel";
 import { IntegrityPanel } from "@/components/integrity/integrity-panel";
 import { AccountMenu } from "@/components/auth/account-menu";
+import { AiPicker } from "@/components/ai/ai-picker";
 
 const TABS = [
   { id: "overview", label: "Overview" },
@@ -158,13 +159,15 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
               </div>
             )}
           </div>
+          <AiPicker />
           <AccountMenu />
         </div>
         <div
           role="tablist"
           aria-label="Paper sections"
           onKeyDown={handleTabKeys}
-          className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 sm:px-10"
+          // Tab labels line up with the paper title above (back button 32px + 12px gap, minus the tab's own padding).
+          className="mx-auto flex max-w-6xl gap-1 overflow-x-auto overflow-y-hidden px-4 pl-[calc(1rem+30px)] [scrollbar-width:none] sm:px-10 sm:pl-[calc(2.5rem+30px)] [&::-webkit-scrollbar]:hidden"
         >
           {TABS.map((tab) => {
             const selected = tab.id === activeTab;

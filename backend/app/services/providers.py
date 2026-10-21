@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 import httpx
@@ -34,6 +35,14 @@ _MAX_PER_PROVIDER = 3
 # Groq's free plan allows about 8,000 tokens per minute per model, counting
 # the prompt and the reply together. Bigger requests are refused outright.
 GROQ_MAX_REQUEST_TOKENS = 7500
+
+
+PROVIDERS = ("gemini", "groq", "openrouter")
+
+# The AI the person picked in the app for this request ("auto" = best
+# available, falling back across all three). Set per request from the
+# X-AI-Provider header in main.py.
+chosen_provider: ContextVar[str] = ContextVar("chosen_provider", default="auto")
 
 
 @dataclass(frozen=True)
@@ -126,7 +135,7 @@ def rank_openrouter(models: list[dict]) -> list[str]:
         is_free = model_id.endswith(":free") or (
             str(pricing.get("prompt")) in ("0", "0.0") and str(pricing.get("completion")) in ("0", "0.0")
         )
-        if not is_free or model_id.startswith("openrouter/"):
+        if not is_free or model_id.startswith("openrouter/") or re.search(r"safety|guard", model_id):
             continue
         if (model.get("context_length") or 0) < _OPENROUTER_MIN_CONTEXT:
             continue
@@ -229,6 +238,11 @@ async def candidates(estimated_tokens: int) -> list[Candidate]:
     if settings.openrouter_api_key:
         pinned = _split(settings.openrouter_model) + _split(settings.openrouter_fallback_models)
         plan.append(("openrouter", settings.openrouter_base_url, settings.openrouter_api_key, pinned))
+
+    choice = chosen_provider.get()
+    if choice in PROVIDERS:
+        # Only the picked provider, so testing on one never uses up another's quota.
+        plan = [entry for entry in plan if entry[0] == choice]
 
     now = time.monotonic()
     result: list[Candidate] = []
