@@ -8,6 +8,7 @@ so re-viewing the analysis tab is always free after the first load.
 """
 import json
 import re
+import unicodedata
 from collections import Counter
 
 from app.services.llm import call_openrouter, LLMRequestError
@@ -22,6 +23,17 @@ _STOPWORDS = {
     "use", "based", "between", "over", "each", "more", "most", "other",
     "may", "will", "would", "could", "should", "one", "two", "three",
     "figure", "table", "et", "al", "i.e", "e.g",
+    # Layout and reference words that say nothing about the topic
+    "fig", "figs", "figures", "tables", "eq", "eqn", "eqs", "sec", "section", "sections",
+    "ref", "refs", "arxiv", "preprint", "proceedings", "conference", "pages", "vol",
+    # More function words
+    "where", "thus", "however", "both", "all", "any", "only", "here", "there", "about",
+    "after", "before", "through", "under", "without", "within", "because", "since",
+    "does", "nor", "out", "very", "just", "how", "what", "who", "whom", "why", "you",
+    "your", "his", "her", "him", "them", "they", "she", "some", "many", "much", "such",
+    "first", "second", "same", "different", "also", "into", "onto", "upon", "per",
+    "while", "whereas", "often", "further", "show", "shows", "shown", "see", "use",
+    "uses", "given", "make", "makes", "made", "well", "less", "least", "like",
 }
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z\-]{2,}")
 _SECTION_GROUPS = {
@@ -52,25 +64,82 @@ def _clean_section_label(label: str) -> str | None:
     return cleaned
 
 
+_TOP_HEADING_RE = re.compile(r"^(\d{1,2})\.?\s+([A-Z][^\n]{1,70})$")
+_NAMED_HEADING_RE = re.compile(
+    r"^(abstract|references|bibliography|acknowledge?ments?|conclusions?|appendix(?:es)?)\b[\s.:]*",
+    re.IGNORECASE,
+)
+
+
+def _is_heading_title(title: str) -> bool:
+    """A numbered line is a heading only if it reads like a title, not a sentence or footnote."""
+    words = title.split()
+    return 0 < len(words) <= 7 and not title.endswith(("-", ".", ",", ";")) and not re.search(r"\d{3,}", title)
+
+
+def _sections_from_text(raw_text: str) -> list[dict]:
+    """
+    Split the paper at its top-level headings: "1 Introduction", "2. Related Work", ...
+    plus Abstract, References, Acknowledgments and Appendix. Numbered headings must
+    count up one at a time, which skips table rows, footnotes and subsections
+    ("4.1 GLUE" stays inside "4 Experiments").
+    """
+    sections: list[dict] = []
+    current: dict | None = None
+    last_number = 0
+    in_back_matter = False
+
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        label = None
+        numbered = _TOP_HEADING_RE.match(stripped)
+        named = _NAMED_HEADING_RE.match(stripped)
+        if numbered and not in_back_matter:
+            number, title = int(numbered.group(1)), numbered.group(2).strip()
+            if number == last_number + 1 and _is_heading_title(title):
+                label, last_number = title, number
+        elif named and len(stripped.split()) <= 6:
+            name = named.group(1).lower()
+            if name.startswith("appendix"):
+                if not any(s["label"] == "Appendix" for s in sections):
+                    label, in_back_matter = "Appendix", True
+            elif name in ("references", "bibliography"):
+                if not any(s["label"] == "References" for s in sections):
+                    label = "References"
+            elif not any(s["label"].lower() == name for s in sections):
+                label = stripped.rstrip(" .:")
+                label = label[0].upper() + label[1:].lower()
+
+        if label:
+            current = {"label": label, "value": 0}
+            sections.append(current)
+            continue
+        if current is not None:
+            current["value"] += len(stripped.split())
+
+    return [s for s in sections if s["value"] > 0]
+
+
 def section_length_stats(structure: dict | None, raw_text: str = "") -> list[dict]:
+    """Words per top-level section, in reading order."""
+    stats = _sections_from_text(raw_text) if raw_text else []
+    if len(stats) >= 2:
+        return stats
+
+    # Fallback: the parser's detected sections, minus labels that are clearly
+    # not headings (numbers, model names such as "VGG-16", the title block).
     sections = (structure or {}).get("sections") or {}
-    stats = []
+    fallback = []
     for name, text in sections.items():
         label = _clean_section_label(name)
-        if label and text.strip():
-            stats.append({"label": label, "value": len(text.split())})
-    if len(stats) < 2 and raw_text:
-        from app.services.parser import detect_structure
-
-        inferred = detect_structure(raw_text)
-        sections = inferred.get("sections") or {}
-        stats = []
-        for name, text in sections.items():
-            label = _clean_section_label(name)
-            if label and text.strip():
-                stats.append({"label": label, "value": len(text.split())})
-    # Biggest sections first — makes for a more readable bar chart.
-    return sorted(stats, key=lambda s: s["value"], reverse=True)
+        if not label or label == "Opening context" or re.search(r"\d", label):
+            continue
+        words = len(text.split())
+        if words >= 30:
+            fallback.append({"label": label, "value": words})
+    return fallback
 
 
 def structure_score(section_lengths: list[dict]) -> int:
@@ -111,11 +180,43 @@ def deterministic_complexity_score(raw_text: str, section_lengths: list[dict]) -
     return max(1, min(10, score))
 
 
+def _singular(word: str) -> str:
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
+
+
 def keyword_frequency(raw_text: str, top_n: int = 15) -> list[dict]:
-    words = [w.lower() for w in _WORD_RE.findall(raw_text)]
-    words = [w for w in words if w not in _STOPWORDS]
-    counts = Counter(words).most_common(top_n)
-    return [{"label": word, "value": count} for word, count in counts]
+    """
+    Most-used topic words. Singular and plural count together ("layer" + "layers"),
+    trailing hyphens from names like "ResNet-50" are dropped, and each term is
+    shown in the spelling the paper uses most ("ImageNet", not "imagenet").
+    """
+    counts: Counter = Counter()
+    spellings: dict[str, Counter] = {}
+    # NFKC turns PDF ligatures back into letters ("ﬁne-tuning" -> "fine-tuning").
+    for match in _WORD_RE.findall(unicodedata.normalize("NFKC", raw_text)):
+        surface = match.strip("-")
+        word = surface.lower()
+        if len(word) < 3 or word in _STOPWORDS or "-" in word and len(word.replace("-", "")) < 3:
+            continue
+        key = _singular(word)
+        if key in _STOPWORDS:
+            continue
+        counts[key] += 1
+        spellings.setdefault(key, Counter())[surface] += 1
+
+    result = []
+    for key, count in counts.most_common(top_n):
+        forms = spellings[key]
+        # Prefer the most used form; break ties toward a capitalised proper name.
+        label = max(forms.items(), key=lambda item: (item[1], item[0] != item[0].lower()))[0]
+        if label.isupper() and len(label) > 4:
+            label = label.lower()  # headings in capitals, not acronyms
+        result.append({"label": label, "value": count})
+    return result
 
 
 async def classify_paper(raw_text: str) -> dict | None:

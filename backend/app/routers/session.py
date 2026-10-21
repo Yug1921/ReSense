@@ -30,6 +30,7 @@ from app.models.schemas import (
 )
 
 from app.auth import CurrentUser, current_user
+from app.routers.analyze import ANALYSIS_VERSION
 
 router = APIRouter(tags=["session"])
 
@@ -59,7 +60,9 @@ async def get_session(paper_id: str, user: CurrentUser = Depends(current_user)) 
         supabase.table(ANALYSIS_TABLE).select("*").eq("paper_id", paper_id).limit(1).execute()
     )
     analysis = None
-    if analysis_result.data:
+    # Only analyses computed by the current code are returned; older ones are
+    # recomputed by /analyze when the Overview opens.
+    if analysis_result.data and analysis_result.data[0]["chart_data_json"].get("version") == ANALYSIS_VERSION:
         data = analysis_result.data[0]["chart_data_json"]
         classification = data.get("classification")
         analysis = AnalyzeResponse(
@@ -68,6 +71,7 @@ async def get_session(paper_id: str, user: CurrentUser = Depends(current_user)) 
             keywords=data["keywords"],
             structure_score=data.get("structure_score", 0),
             classification=Classification(**classification) if classification else None,
+            reference_count=data.get("reference_count"),
             cached=True,
         )
 

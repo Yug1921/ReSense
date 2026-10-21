@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, ANALYSIS_TABLE
 from app.models.schemas import AnalyzeRequest, AnalyzeResponse, Classification
+from app.services.references import extract_references
 from app.services.analysis import (
     section_length_stats,
     keyword_frequency,
@@ -22,6 +23,9 @@ from app.services.analysis import (
 from app.auth import CurrentUser, current_user
 
 router = APIRouter(tags=["analyze"])
+
+# Bump when what gets computed changes, so saved analyses are recomputed.
+ANALYSIS_VERSION = 4
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -51,15 +55,14 @@ async def analyze_paper(req: AnalyzeRequest, user: CurrentUser = Depends(current
     )
     if cached.data:
         data = cached.data[0]["chart_data_json"]
-        if data.get("version") != 3:
-            cached = None
-        else:
+        if data.get("version") == ANALYSIS_VERSION:
             return AnalyzeResponse(
                 paper_id=req.paper_id,
                 section_lengths=data["section_lengths"],
                 keywords=data["keywords"],
                 structure_score=data["structure_score"],
                 classification=data.get("classification"),
+                reference_count=data.get("reference_count"),
                 cached=True,
             )
 
@@ -69,11 +72,15 @@ async def analyze_paper(req: AnalyzeRequest, user: CurrentUser = Depends(current
     classification = await classify_paper(paper["raw_text"])  # may be None on LLM failure
     score = deterministic_complexity_score(paper["raw_text"], section_lengths)
     complexity = next(label for ceiling, label in ((2, "low"), (4, "medium-low"), (6, "medium"), (8, "high"), (10, "very high")) if score <= ceiling)
-    classification = classification or {"paper_type": "research paper"}
+    # When the AI is unavailable we say so ("unknown") rather than guess a type.
+    classification = classification or {"paper_type": "unknown"}
     classification.update({"complexity": complexity, "complexity_score": score})
 
+    reference_count = len(extract_references(paper.get("structure_json") or {}, paper["raw_text"]))
+
     chart_data_json = {
-        "version": 3,
+        "version": ANALYSIS_VERSION,
+        "reference_count": reference_count,
         "section_lengths": section_lengths,
         "keywords": keywords,
         "structure_score": paper_structure_score,
@@ -90,5 +97,6 @@ async def analyze_paper(req: AnalyzeRequest, user: CurrentUser = Depends(current
         keywords=keywords,
         structure_score=paper_structure_score,
         classification=Classification(**classification) if classification else None,
+        reference_count=reference_count,
         cached=False,
     )

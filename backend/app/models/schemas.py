@@ -81,6 +81,7 @@ class AnalyzeResponse(BaseModel):
     keywords: list[ChartPoint]
     structure_score: int = Field(ge=0, le=100)
     classification: Optional[Classification] = None
+    reference_count: Optional[int] = None
     cached: bool = Field(
         description="True if served from the analysis cache, False if just computed."
     )

@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { ApiError, getSession, type SessionResponse } from "@/lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AnalysisPanel } from "@/components/analysis/analysis-panel";
+import { OverviewPanel } from "@/components/overview/overview-panel";
 import { SummaryPanel } from "@/components/summary/summary-panel";
 import { ChatPanel } from "@/components/qa/chat-panel";
 import { IntegrityPanel } from "@/components/integrity/integrity-panel";
@@ -206,7 +206,17 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
               aria-labelledby={`tab-${tab.id}`}
               hidden={tab.id !== activeTab}
             >
-              {tab.id === "overview" && <AnalysisPanel paperId={paperId} initialAnalysis={session.analysis} />}
+              {tab.id === "overview" && (
+                <OverviewPanel
+                  paperId={paperId}
+                  wordCount={paper?.structure.word_count}
+                  initialAnalysis={session.analysis}
+                  onOpenTab={(id) => {
+                    selectTab(id);
+                    window.scrollTo({ top: 0 });
+                  }}
+                />
+              )}
               {tab.id === "summary" && <SummaryPanel paperId={paperId} initialSummaries={session.summaries} />}
               {tab.id === "ask" && (
                 <ChatPanel paperId={paperId} initialHistory={session.chat_history} className="mx-auto max-w-3xl" />

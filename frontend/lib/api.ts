@@ -122,6 +122,7 @@ export interface AnalyzeResponse {
   keywords: ChartPoint[];
   structure_score: number;
   classification: Classification | null;
+  reference_count?: number | null;
   cached: boolean;
 }
 
