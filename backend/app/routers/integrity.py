@@ -1,5 +1,7 @@
 """POST /integrity/references — deterministic Crossref reference checking."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
@@ -66,7 +68,11 @@ async def check_references(req: ReferenceCheckRequest) -> ReferenceCheckResponse
     items = await verify_all(refs, settings.crossref_mailto) if refs else []
     response = _build_response(req.paper_id, items, cached=False)
     supabase.table(INTEGRITY_TABLE).upsert(
-        {"paper_id": req.paper_id, "report_json": response.model_dump(exclude={"cached"})},
+        {
+            "paper_id": req.paper_id,
+            "report_json": response.model_dump(exclude={"cached"}),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        },
         on_conflict="paper_id",
     ).execute()
     return response

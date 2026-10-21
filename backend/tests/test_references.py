@@ -725,6 +725,65 @@ class ReferenceTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(doi_result["status"], "not_found")
         self.assertTrue(all("openalex.org" not in call for call in calls))
+    async def test_neurips_first_name_first_author_list_is_verified(self):
+        # BERT (NAACL 2019) bibliography style: "First Last" author names.
+        async def handler(request):
+            return httpx.Response(200, text=self._NEURIPS_FIXTURE, request=request)
+
+        reference = (
+            "Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, "
+            "Aidan N Gomez, Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is all "
+            "you need. In Advances in Neural Information Processing Systems, pages 6000–6010."
+        )
+        async with _client(handler) as client:
+            result = await verify_reference(client, reference, "")
+        self.assertEqual(result["status"], "verified")
+        self.assertNotIn("first_author", result.get("conflict_fields") or [])
+
+    def test_author_surnames_across_bibliography_styles(self):
+        cases = {
+            # Real entries from test-pdfs/ (BERT NAACL 2019, ResNet CVPR 2016).
+            "Rie Kubota Ando and Tong Zhang. 2005. A framework for learning predictive "
+            "structures from multiple tasks and unlabeled data. Journal of Machine "
+            "Learning Research, 6(Nov):1817–1853.": ["ando", "zhang"],
+            "Kevin Clark, Minh-Thang Luong, Christopher D Manning, and Quoc Le. 2018. "
+            "Semi-supervised sequence modeling with cross-view training.": ["clark", "luong"],
+            "J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. FeiFei. 2009. ImageNet: "
+            "A Large-Scale Hierarchical Image Database. In CVPR09 .": ["deng", "dong"],
+            "[9] I. J. Goodfellow, D. Warde-Farley, M. Mirza, A. Courville, and Y. Bengio. "
+            "Maxout networks. arXiv:1302.4389 , 2013.": ["goodfellow"],
+            "Vaswani, A. et al. 2017. Attention Is All You Need.": ["vaswani"],
+        }
+        for reference, expected in cases.items():
+            surnames = _reference_metadata(reference).author_surnames
+            self.assertEqual(surnames[: len(expected)], expected, reference)
+
+    def test_trailing_year_style_titles(self):
+        # CVPR/IEEE style puts the year last; the title follows the author block.
+        self.assertEqual(
+            extract_reference_title(
+                "[9] I. J. Goodfellow, D. Warde-Farley, M. Mirza, A. Courville, and "
+                "Y. Bengio. Maxout networks. arXiv:1302.4389 , 2013."
+            ),
+            "Maxout networks",
+        )
+        self.assertEqual(
+            extract_reference_title(
+                "[6] R. Girshick. Fast R-CNN. In ICCV, 2015."
+            ),
+            "Fast R-CNN",
+        )
+
+    def test_year_with_disambiguation_suffix(self):
+        metadata = _reference_metadata(
+            "Matthew Peters, Mark Neumann, Mohit Iyyer, Matt Gardner, Christopher Clark, "
+            "Kenton Lee, and Luke Zettlemoyer. 2018a. Deep contextualized word "
+            "representations. In NAACL."
+        )
+        self.assertEqual(metadata.year, 2018)
+        self.assertEqual(metadata.first_author, "peters")
+        self.assertEqual(metadata.title, "Deep contextualized word representations")
+
     def test_extract_reference_titles_and_normalization(self):
         reference = "[4] Breiman L 2001 Random forests. Machine Learning 45: 5-32."
         self.assertEqual(extract_reference_title(reference), "Random forests")
