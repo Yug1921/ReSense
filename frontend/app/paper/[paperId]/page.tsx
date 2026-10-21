@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { PaperWorkspace } from "@/components/paper/paper-workspace";
+import { RequireAuth } from "@/components/auth/require-auth";
 
 export default async function PaperPage({
   params,
@@ -9,7 +10,9 @@ export default async function PaperPage({
   const { paperId } = await params;
   return (
     <Suspense>
-      <PaperWorkspace paperId={paperId} />
+      <RequireAuth>
+        <PaperWorkspace paperId={paperId} />
+      </RequireAuth>
     </Suspense>
   );
 }

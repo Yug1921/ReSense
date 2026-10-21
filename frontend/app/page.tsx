@@ -1,9 +1,12 @@
 "use client";
 
+import { Suspense } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import FileUpload from "@/components/upload/file-upload";
 import type { UploadResponse } from "@/lib/api";
+import { RequireAuth } from "@/components/auth/require-auth";
+import { AccountMenu } from "@/components/auth/account-menu";
 
 export default function Home() {
   const router = useRouter();
@@ -32,6 +35,9 @@ export default function Home() {
   // once, confirmed while testing the real upload flow end-to-end.
 
   return (
+    <Suspense>
+    <RequireAuth>
+    <div className="fixed right-6 top-5 z-40"><AccountMenu /></div>
     <main className="flex min-h-screen flex-col items-center justify-center gap-8 bg-background px-6 text-foreground">
       <div className="text-center">
         <h1 className="text-4xl font-semibold tracking-tight">ReSense</h1>
@@ -41,5 +47,7 @@ export default function Home() {
       </div>
       <FileUpload onUploadSuccess={handleUploadSuccess} />
     </main>
+    </RequireAuth>
+    </Suspense>
   );
 }

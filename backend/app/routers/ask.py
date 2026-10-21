@@ -8,7 +8,7 @@ OpenRouter to answer from those excerpts alone. Every turn is persisted
 to chat_messages so a reload replays the full conversation instead of
 losing it.
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 import re
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, CHAT_MESSAGES_TABLE, FIGURES_TABLE
@@ -18,6 +18,8 @@ from app.services.chunking import chunk_paper
 from app.services.retrieval import retrieve_relevant_chunks
 from app.services.llm import call_openrouter, LLMRateLimitError, LLMRequestError
 from app.services.prompts import build_ask_prompt
+
+from app.auth import CurrentUser, current_user
 
 router = APIRouter(tags=["ask"])
 
@@ -51,7 +53,7 @@ def _local_fallback_answer(question: str, relevant_chunks: list[dict]) -> str:
 
 
 @router.post("/ask", response_model=AskResponse)
-async def ask_paper(req: AskRequest) -> AskResponse:
+async def ask_paper(req: AskRequest, user: CurrentUser = Depends(current_user)) -> AskResponse:
     question = req.question.strip()
     if len(question) < 3:
         # Graceful nudge instead of spending an LLM call on junk input
@@ -65,7 +67,12 @@ async def ask_paper(req: AskRequest) -> AskResponse:
     supabase = get_supabase()
 
     paper_result = (
-        supabase.table(PAPERS_TABLE).select("*").eq("id", req.paper_id).limit(1).execute()
+        supabase.table(PAPERS_TABLE)
+        .select("*")
+        .eq("id", req.paper_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
     )
     if not paper_result.data:
         raise HTTPException(status_code=404, detail="No paper found for this paper_id.")

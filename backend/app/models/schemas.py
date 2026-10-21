@@ -94,6 +94,14 @@ class PaperInfo(BaseModel):
     structure: dict
 
 
+class PaperListItem(BaseModel):
+    paper_id: str
+    filename: str
+    status: PaperStatus
+    uploaded_at: str
+    word_count: int | None = None
+
+
 class SessionResponse(BaseModel):
     """
     Everything the frontend needs to fully restore a paper's state after

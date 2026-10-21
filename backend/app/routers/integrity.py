@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from app.config import settings
 from app.db.supabase_client import INTEGRITY_TABLE, PAPERS_TABLE, get_supabase
@@ -13,6 +13,8 @@ from app.models.schemas import (
 )
 from app.services.references import extract_references, verify_all
 
+
+from app.auth import CurrentUser, current_user
 
 router = APIRouter(prefix="/integrity", tags=["integrity"])
 
@@ -37,10 +39,17 @@ def _build_response(paper_id: str, items: list[dict], cached: bool) -> Reference
 
 
 @router.post("/references", response_model=ReferenceCheckResponse)
-async def check_references(req: ReferenceCheckRequest) -> ReferenceCheckResponse:
+async def check_references(
+    req: ReferenceCheckRequest, user: CurrentUser = Depends(current_user)
+) -> ReferenceCheckResponse:
     supabase = get_supabase()
     paper_result = (
-        supabase.table(PAPERS_TABLE).select("*").eq("id", req.paper_id).limit(1).execute()
+        supabase.table(PAPERS_TABLE)
+        .select("*")
+        .eq("id", req.paper_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
     )
     if not paper_result.data:
         raise HTTPException(status_code=404, detail="No paper found for this paper_id.")

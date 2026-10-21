@@ -10,6 +10,7 @@ for _name in ("SUPABASE_URL", "SUPABASE_KEY", "OPENROUTER_API_KEY"):
 import httpx
 from fastapi.testclient import TestClient
 
+from app.auth import CurrentUser, current_user
 from app.main import app
 from app.routers import integrity
 from app.services import references
@@ -52,6 +53,7 @@ class _FakeSupabase:
 def _paper(status="ready"):
     return {
         "id": "p1",
+        "user_id": "u1",
         "status": status,
         "raw_text": "References\n[1] A. Author. Some title. 2020.\n[2] B. Author. Other title. 2021.",
         "structure_json": {},
@@ -60,6 +62,8 @@ def _paper(status="ready"):
 
 class IntegrityRouterTests(unittest.TestCase):
     def setUp(self):
+        app.dependency_overrides[current_user] = lambda: CurrentUser(id="u1")
+        self.addCleanup(app.dependency_overrides.clear)
         self.client = TestClient(app)
 
     def _post(self, db, **body):
@@ -68,6 +72,14 @@ class IntegrityRouterTests(unittest.TestCase):
 
     def test_missing_paper_returns_404(self):
         self.assertEqual(self._post(_FakeSupabase({})).status_code, 404)
+
+    def test_signed_out_request_returns_401(self):
+        app.dependency_overrides.clear()
+        self.assertEqual(self._post(_FakeSupabase({"papers": [_paper()]})).status_code, 401)
+
+    def test_someone_elses_paper_returns_404(self):
+        app.dependency_overrides[current_user] = lambda: CurrentUser(id="u2")
+        self.assertEqual(self._post(_FakeSupabase({"papers": [_paper()]})).status_code, 404)
 
     def test_paper_not_ready_returns_409(self):
         db = _FakeSupabase({"papers": [_paper(status="parsing")]})

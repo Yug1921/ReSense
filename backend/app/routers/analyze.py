@@ -6,7 +6,7 @@ G's job on the frontend. Section-length and keyword-frequency are
 computed for free (no LLM call); classification uses one small cached
 LLM call.
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, ANALYSIS_TABLE
 from app.models.schemas import AnalyzeRequest, AnalyzeResponse, Classification
@@ -19,15 +19,22 @@ from app.services.analysis import (
 )
 
 
+from app.auth import CurrentUser, current_user
+
 router = APIRouter(tags=["analyze"])
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
-async def analyze_paper(req: AnalyzeRequest) -> AnalyzeResponse:
+async def analyze_paper(req: AnalyzeRequest, user: CurrentUser = Depends(current_user)) -> AnalyzeResponse:
     supabase = get_supabase()
 
     paper_result = (
-        supabase.table(PAPERS_TABLE).select("*").eq("id", req.paper_id).limit(1).execute()
+        supabase.table(PAPERS_TABLE)
+        .select("*")
+        .eq("id", req.paper_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
     )
     if not paper_result.data:
         raise HTTPException(status_code=404, detail="No paper found for this paper_id.")

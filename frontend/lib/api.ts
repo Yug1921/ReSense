@@ -1,3 +1,5 @@
+import { getAccessToken, getSupabase, isAuthConfigured } from "@/lib/supabase";
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -49,12 +51,35 @@ export class ApiError extends Error {
   }
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// The backend refused our sign-in (expired or revoked): sign out locally and
+// send the person to sign in again, returning to this page afterwards.
+function handleSignedOut() {
+  if (typeof window === "undefined" || window.location.pathname.startsWith("/sign-in")) return;
+  const next = `${window.location.pathname}${window.location.search}`;
+  // A full page load (not router.push) so no signed-in state survives in memory.
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  const redirect = () => window.location.assign(`/sign-in?next=${encodeURIComponent(next)}`);
+  if (isAuthConfigured()) getSupabase().auth.signOut().finally(redirect);
+  else redirect();
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: { ...(await authHeaders()), ...(init.headers as Record<string, string> | undefined) },
+    });
+  } catch {
+    throw new ApiError("We couldn't reach ReSense. Check your connection and try again.", 0);
+  }
+  if (res.status === 401) handleSignedOut();
+  if (res.status === 204) return undefined as T;
   let data: unknown;
   try {
     data = await res.json();
@@ -68,19 +93,16 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`);
-  let data: unknown;
-  try {
-    data = await res.json();
-  } catch {
-    data = null;
-  }
-  if (!res.ok) {
-    const detail = (data as { detail?: string } | null)?.detail ?? `Request failed (${res.status})`;
-    throw new ApiError(detail, res.status);
-  }
-  return data as T;
+function postJson<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function getJson<T>(path: string): Promise<T> {
+  return request<T>(path);
 }
 
 export interface ChartPoint {
@@ -127,6 +149,23 @@ export function getSession(paperId: string): Promise<SessionResponse> {
   return getJson<SessionResponse>(`/session/${encodeURIComponent(paperId)}`);
 }
 
+export interface PaperListItem {
+  paper_id: string;
+  filename: string;
+  status: PaperStatus;
+  uploaded_at: string;
+  word_count: number | null;
+}
+
+// The signed-in person's papers, newest first.
+export function listPapers(): Promise<PaperListItem[]> {
+  return getJson<PaperListItem[]>("/papers");
+}
+
+export function deletePaper(paperId: string): Promise<void> {
+  return request<void>(`/papers/${encodeURIComponent(paperId)}`, { method: "DELETE" });
+}
+
 export interface AskResponse {
   paper_id: string;
   answer: string;
@@ -157,29 +196,46 @@ export function uploadPaper(
   const formData = new FormData();
   formData.append("file", file);
 
-  const promise = new Promise<UploadResponse>((resolve, reject) => {
-    xhr.open("POST", `${API_BASE_URL}/upload`);
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && onProgress) {
-        onProgress(Math.round((event.loaded / event.total) * 100));
-      }
-    };
-    xhr.onload = () => {
-      let body: unknown;
-      try { body = JSON.parse(xhr.responseText); } catch { body = null; }
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(body as UploadResponse);
-      } else {
-        const detail = (body as { detail?: string } | null)?.detail ?? "Upload failed.";
-        reject(new ApiError(detail, xhr.status));
-      }
-    };
-    xhr.onerror = () => reject(new ApiError("Network error — is the backend running?", 0));
-    xhr.onabort = () => reject(new ApiError("Upload cancelled.", 0));
-    xhr.send(formData);
-  });
+  let aborted = false;
 
-  return { promise, abort: () => xhr.abort() };
+  const promise = authHeaders().then(
+    (headers) =>
+      new Promise<UploadResponse>((resolve, reject) => {
+        if (aborted) {
+          reject(new ApiError("Upload cancelled.", 0));
+          return;
+        }
+        xhr.open("POST", `${API_BASE_URL}/upload`);
+        for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onProgress) {
+            onProgress(Math.round((event.loaded / event.total) * 100));
+          }
+        };
+        xhr.onload = () => {
+          let body: unknown;
+          try { body = JSON.parse(xhr.responseText); } catch { body = null; }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(body as UploadResponse);
+          } else {
+            if (xhr.status === 401) handleSignedOut();
+            const detail = (body as { detail?: string } | null)?.detail ?? "Upload failed.";
+            reject(new ApiError(detail, xhr.status));
+          }
+        };
+        xhr.onerror = () => reject(new ApiError("Network error — is the backend running?", 0));
+        xhr.onabort = () => reject(new ApiError("Upload cancelled.", 0));
+        xhr.send(formData);
+      })
+  );
+
+  return {
+    promise,
+    abort: () => {
+      aborted = true;
+      xhr.abort();
+    },
+  };
 }
 
 export type ReferenceStatus = "verified" | "uncertain" | "not_found" | "unavailable";

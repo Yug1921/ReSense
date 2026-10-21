@@ -12,6 +12,7 @@ import { AnalysisPanel } from "@/components/analysis/analysis-panel";
 import { SummaryPanel } from "@/components/summary/summary-panel";
 import { ChatPanel } from "@/components/qa/chat-panel";
 import { IntegrityPanel } from "@/components/integrity/integrity-panel";
+import { AccountMenu } from "@/components/auth/account-menu";
 
 const TABS = [
   { id: "overview", label: "Overview" },
@@ -143,7 +144,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
           >
             <ArrowLeft className="size-[18px]" />
           </Link>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             {paper ? (
               <>
                 <h1 className="truncate text-[15px] font-medium leading-tight">{paper.filename}</h1>
@@ -157,6 +158,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
               </div>
             )}
           </div>
+          <AccountMenu />
         </div>
         <div
           role="tablist"

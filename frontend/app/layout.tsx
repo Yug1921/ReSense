@@ -4,6 +4,7 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { Newsreader } from "next/font/google";
 import { Toaster } from "sonner";
+import { AuthProvider } from "@/components/auth/auth-provider";
 import "./globals.css";
 
 // Serif for long-form reading (summaries and answers). Self-hosted at build time.
@@ -37,7 +38,7 @@ export default function RootLayout({
       className={`dark ${GeistSans.variable} ${GeistMono.variable} ${newsreader.variable}`}
     >
       <body className="font-sans antialiased">
-        {children}
+        <AuthProvider>{children}</AuthProvider>
         <Toaster
           theme="dark"
           position="top-center"

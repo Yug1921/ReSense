@@ -11,21 +11,28 @@ additional vision calls, same caching philosophy as /summarize and
 Deliberately reuses AnalyzeRequest ({paper_id}) as the request body
 shape — no new request model needed for a single-field payload.
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, FIGURES_TABLE
 from app.models.schemas import AnalyzeRequest, FiguresResponse, Figure
 from app.services.figures_data import ensure_figures_captioned
 
+from app.auth import CurrentUser, current_user
+
 router = APIRouter(tags=["figures"])
 
 
 @router.post("/figures", response_model=FiguresResponse)
-async def get_figures(req: AnalyzeRequest) -> FiguresResponse:
+async def get_figures(req: AnalyzeRequest, user: CurrentUser = Depends(current_user)) -> FiguresResponse:
     supabase = get_supabase()
 
     paper_result = (
-        supabase.table(PAPERS_TABLE).select("id, status").eq("id", req.paper_id).limit(1).execute()
+        supabase.table(PAPERS_TABLE)
+        .select("id, status")
+        .eq("id", req.paper_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
     )
     if not paper_result.data:
         raise HTTPException(status_code=404, detail="No paper found for this paper_id.")

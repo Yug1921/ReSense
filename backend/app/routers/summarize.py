@@ -8,7 +8,7 @@ the UI free after the first generation per tone.
 """
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, SUMMARIES_TABLE
 from app.db.supabase_client import FIGURES_TABLE
@@ -20,6 +20,8 @@ from app.services.prompts import (
     normalize_figure_table_response,
 )
 from app.services.figures_data import ensure_figures_captioned
+
+from app.auth import CurrentUser, current_user
 
 router = APIRouter(tags=["summarize"])
 
@@ -40,7 +42,9 @@ async def _execute_query(query):
 
 
 @router.post("/summarize", response_model=SummarizeResponse)
-async def summarize_paper(req: SummarizeRequest) -> SummarizeResponse:
+async def summarize_paper(
+    req: SummarizeRequest, user: CurrentUser = Depends(current_user)
+) -> SummarizeResponse:
     if req.tone not in _VALID_TONES:
         raise HTTPException(
             status_code=400,
@@ -50,7 +54,7 @@ async def summarize_paper(req: SummarizeRequest) -> SummarizeResponse:
     supabase = get_supabase()
 
     paper_query = (
-        supabase.table(PAPERS_TABLE).select("*").eq("id", req.paper_id).limit(1)
+        supabase.table(PAPERS_TABLE).select("*").eq("id", req.paper_id).eq("user_id", user.id).limit(1)
     )
     paper_result = await _execute_query(paper_query)
     if not paper_result.data:
