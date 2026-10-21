@@ -28,11 +28,11 @@ export interface ToneMeta {
 }
 
 export const TONES: ToneMeta[] = [
-  { id: "academic", label: "Academic", description: "Follows the paper's own structure and preserves its terminology." },
-  { id: "technical", label: "Technical", description: "Algorithms, architecture, dataset, parameters, evaluation metrics." },
-  { id: "research_insight", label: "Research Insight", description: "Problem, gap, novelty, contribution, significance." },
-  { id: "figure_table_analysis", label: "Figure & Table Analysis", description: "What each figure/table shows and what it supports." },
-  { id: "critical_review", label: "Critical Review", description: "What's demonstrated vs. merely claimed; limitations." },
+  { id: "academic", label: "Academic", description: "Follows the paper's own structure" },
+  { id: "technical", label: "Technical", description: "Methods, data, settings, metrics" },
+  { id: "research_insight", label: "Research Insight", description: "Problem, what is new, why it matters" },
+  { id: "figure_table_analysis", label: "Figures & Tables", description: "What each figure and table shows" },
+  { id: "critical_review", label: "Critical Review", description: "Shown vs. claimed, limitations" },
 ];
 
 export interface SummarizeResponse {
