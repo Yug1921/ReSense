@@ -3,80 +3,82 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * ReSense is dark-only for now, so the palette lives on :root and the `dark`
+ * class on <html> only keeps `dark:` variants working.
+ * Every text colour below passes WCAG AA on --background.
+ */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
+  color-scheme: dark;
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.145 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.145 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.396 0.141 25.723);
-  --destructive-foreground: oklch(0.637 0.237 25.331);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  /* Surfaces, from the page up */
+  --background: #0a0a0a;
+  --card: #101012;
+  --raised: #161719;
+  --divider: #1b1c1e;
+  --border: #252628;
+  --border-strong: #34363a;
+
+  /* Text */
+  --heading: #fafafa;
+  --foreground: #e9e8e4;
+  --muted-foreground: #a1a1a1;
+  --subtle-foreground: #808080;
+
+  /* Signature accent */
+  --iris: #9ca5ea;
+  --iris-strong: #c3c8f4;
+  --iris-ink: #0e0f1a;
+
+  /* Status and data colours */
+  --sage: #83caa4;
+  --honey: #e2bf76;
+  --rose: #e58b88;
+  --slate: #979fab;
+  --mist: #82bad5;
+  --sand: #d7b894;
+
+  /* shadcn names, mapped onto the palette above */
+  --card-foreground: var(--foreground);
+  --popover: var(--raised);
+  --popover-foreground: var(--foreground);
+  --primary: var(--iris);
+  --primary-foreground: var(--iris-ink);
+  --secondary: var(--raised);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--raised);
+  --accent: var(--raised);
+  --accent-foreground: var(--heading);
+  --destructive: var(--rose);
+  --destructive-foreground: var(--rose);
+  --input: var(--border);
+  --ring: var(--iris);
+  --chart-1: var(--iris);
+  --chart-2: var(--sage);
+  --chart-3: var(--honey);
+  --chart-4: var(--mist);
+  --chart-5: var(--sand);
+  --radius: 0.625rem;
 }
 
 @theme inline {
   --font-sans: var(--font-geist-sans), "Geist Fallback", sans-serif;
   --font-mono: var(--font-geist-mono), "Geist Mono Fallback", monospace;
+  --font-serif: var(--font-newsreader), Georgia, "Times New Roman", serif;
+  --color-raised: var(--raised);
+  --color-divider: var(--divider);
+  --color-border-strong: var(--border-strong);
+  --color-heading: var(--heading);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-iris: var(--iris);
+  --color-iris-strong: var(--iris-strong);
+  --color-iris-ink: var(--iris-ink);
+  --color-sage: var(--sage);
+  --color-honey: var(--honey);
+  --color-rose: var(--rose);
+  --color-slate: var(--slate);
+  --color-mist: var(--mist);
+  --color-sand: var(--sand);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -105,16 +107,8 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
 
-  /* <CHANGE> Added shimmer button animations */
+  /* Shimmer button animations */
   --animate-shimmer-slide: shimmer-slide var(--speed) ease-in-out infinite alternate;
   --animate-spin-around: spin-around calc(var(--speed) * 2) infinite linear;
 
@@ -148,5 +142,53 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-heading;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--iris) 35%, transparent);
+    color: var(--heading);
+  }
+  :focus-visible {
+    outline: 2px solid var(--iris);
+    outline-offset: 2px;
+  }
+}
+
+/* Long-form text: summaries and answers */
+@utility reading {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.7;
+  color: var(--foreground);
+}
+
+/* Numbers that should line up and read as data */
+@utility figures {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Small uppercase label above a group */
+@utility eyebrow {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--subtle-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
