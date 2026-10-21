@@ -535,10 +535,10 @@ export function IntegrityPanel({ paperId }: { paperId: string }) {
             <span className="text-xs text-subtle-foreground" role="status" aria-live="polite">
               {checking ? (
                 <>
-                  Looking up each reference. A long list takes about a minute. <ElapsedTime />
+                  Looking up each reference. This usually takes about a minute, or a few minutes for a paper with hundreds of references. <ElapsedTime />
                 </>
               ) : (
-                "A long reference list takes about a minute."
+                "This usually takes about a minute, or a few minutes for a paper with hundreds of references."
               )}
             </span>
           </div>
@@ -581,7 +581,7 @@ export function IntegrityPanel({ paperId }: { paperId: string }) {
     <div className="mx-auto max-w-5xl">
       <Summary report={report} checking={checking} error={checkError} onCheckAgain={() => runCheck(true)} />
       <p className="sr-only" role="status" aria-live="polite">
-        {checking ? "Checking every reference again. This can take about a minute." : ""}
+        {checking ? "Checking every reference again. This can take a few minutes for a long reference list." : ""}
       </p>
 
       <div role="group" aria-label="Show references" className="mt-6 flex flex-wrap gap-2">
