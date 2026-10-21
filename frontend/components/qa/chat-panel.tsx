@@ -119,11 +119,12 @@ function GlowingChatInput({
 
 export interface ChatPanelProps {
   paperId: string;
+  initialHistory?: ChatMessage[];
   className?: string;
 }
 
-export function ChatPanel({ paperId, className }: ChatPanelProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+export function ChatPanel({ paperId, initialHistory, className }: ChatPanelProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>(initialHistory ?? []);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);

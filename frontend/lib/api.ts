@@ -68,6 +68,21 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${path}`);
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const detail = (data as { detail?: string } | null)?.detail ?? `Request failed (${res.status})`;
+    throw new ApiError(detail, res.status);
+  }
+  return data as T;
+}
+
 export interface ChartPoint {
   label: string;
   value: number;
@@ -86,6 +101,30 @@ export interface AnalyzeResponse {
   structure_score: number;
   classification: Classification | null;
   cached: boolean;
+}
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface PaperInfo {
+  paper_id: string;
+  filename: string;
+  status: PaperStatus;
+  structure: { word_count?: number; section_order?: string[] } & Record<string, unknown>;
+}
+
+export interface SessionResponse {
+  paper: PaperInfo;
+  summaries: Partial<Record<Tone, string>>;
+  analysis: AnalyzeResponse | null;
+  chat_history: ChatTurn[];
+}
+
+// Read-only: restores everything already generated for a paper, never starts new work.
+export function getSession(paperId: string): Promise<SessionResponse> {
+  return getJson<SessionResponse>(`/session/${encodeURIComponent(paperId)}`);
 }
 
 export interface AskResponse {

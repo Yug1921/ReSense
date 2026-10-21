@@ -40,14 +40,15 @@ function SummaryContent({ content }: { content: string }) {
 
 export interface SummaryPanelProps {
   paperId: string;
+  initialSummaries?: Partial<Record<Tone, string>>;
   className?: string;
 }
 
-export function SummaryPanel({ paperId, className }: SummaryPanelProps) {
+export function SummaryPanel({ paperId, initialSummaries, className }: SummaryPanelProps) {
   const [selectedTone, setSelectedTone] = useState<Tone | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [summaries, setSummaries] = useState<Partial<Record<Tone, string>>>({});
+  const [summaries, setSummaries] = useState<Partial<Record<Tone, string>>>(initialSummaries ?? {});
 
   const [scanDone, setScanDone] = useState(false);
   const [fetchState, setFetchState] = useState<FetchState>({ status: "pending" });

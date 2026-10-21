@@ -40,6 +40,7 @@ function YAxisTick({
 
 export interface AnalysisPanelProps {
   paperId: string;
+  initialAnalysis?: AnalyzeResponse | null;
   className?: string;
 }
 
@@ -112,12 +113,13 @@ function Ring({
   );
 }
 
-export function AnalysisPanel({ paperId, className }: AnalysisPanelProps) {
-  const [phase, setPhase] = useState<Phase>("loading");
-  const [data, setData] = useState<AnalyzeResponse | null>(null);
+export function AnalysisPanel({ paperId, initialAnalysis, className }: AnalysisPanelProps) {
+  const [phase, setPhase] = useState<Phase>(initialAnalysis ? "ready" : "loading");
+  const [data, setData] = useState<AnalyzeResponse | null>(initialAnalysis ?? null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    if (initialAnalysis) return;
     let cancelled = false;
 
     analyzePaper(paperId)
@@ -136,7 +138,7 @@ export function AnalysisPanel({ paperId, className }: AnalysisPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [paperId]);
+  }, [paperId, initialAnalysis]);
 
   if (phase === "loading") {
     return (
