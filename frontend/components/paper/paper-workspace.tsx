@@ -10,7 +10,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OverviewPanel } from "@/components/overview/overview-panel";
 import { SummaryPanel } from "@/components/summary/summary-panel";
-import { ChatPanel } from "@/components/qa/chat-panel";
+import { AskPanel } from "@/components/qa/ask-panel";
 import { IntegrityPanel } from "@/components/integrity/integrity-panel";
 import { AccountMenu } from "@/components/auth/account-menu";
 
@@ -219,7 +219,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
               )}
               {tab.id === "summary" && <SummaryPanel paperId={paperId} initialSummaries={session.summaries} />}
               {tab.id === "ask" && (
-                <ChatPanel paperId={paperId} initialHistory={session.chat_history} className="mx-auto max-w-3xl" />
+                <AskPanel paperId={paperId} initialHistory={session.chat_history} />
               )}
               {tab.id === "integrity" && <IntegrityPanel paperId={paperId} />}
             </section>
