@@ -3,51 +3,74 @@
 import { Suspense } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import FileUpload from "@/components/upload/file-upload";
 import type { UploadResponse } from "@/lib/api";
 import { RequireAuth } from "@/components/auth/require-auth";
 import { AccountMenu } from "@/components/auth/account-menu";
+import { Logo } from "@/components/brand/logo";
+import { UploadCard } from "@/components/upload/upload-card";
+import { PapersList } from "@/components/home/papers-list";
 
-export default function Home() {
+const STEPS = [
+  { title: "Upload", text: "We read the text and its sections" },
+  { title: "Read it your way", text: "Summaries in five tones, and answers" },
+  { title: "Check references", text: "Matched against Crossref, OpenAlex and arXiv" },
+];
+
+function Home() {
   const router = useRouter();
 
-  function handleUploadSuccess(_file: File, response: UploadResponse) {
-    if (response.status === "empty_text") {
-      toast.error(
-        response.message ??
-          "Couldn't read text from this file — it may be a scanned/image-only document."
-      );
-      return;
-    }
-    if (response.status === "parse_failed") {
-      toast.error("This file couldn't be read. It may be corrupted.");
-      return;
-    }
-    if (response.reused_existing) {
-      toast.info("This paper was already uploaded — resuming your session.");
-    }
+  function handleUploaded(response: UploadResponse) {
+    if (response.reused_existing) toast("You've uploaded this paper before. Opening it.");
     router.push(`/paper/${response.paper_id}`);
   }
 
-  // Deliberately no onUploadError handler here — the upload card already
-  // renders its own inline error state (and auto-clears it after 3s), so
-  // adding a toast on top of it doubled up the same message on screen at
-  // once, confirmed while testing the real upload flow end-to-end.
+  return (
+    <div className="flex min-h-screen flex-col">
+      <header className="border-b border-divider">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-10">
+          <Logo />
+          <AccountMenu />
+        </div>
+      </header>
 
+      <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center px-4 pb-16 pt-14 sm:pt-20">
+        <h1 className="text-center text-3xl font-semibold leading-tight tracking-tight sm:text-[40px]">
+          Understand any research paper
+        </h1>
+        <p className="mt-3.5 max-w-md text-center text-base leading-relaxed text-muted-foreground sm:text-[17px]">
+          Upload a paper to read it in the tone you need, ask it questions, and check its references.
+        </p>
+
+        <div className="mt-10 w-full max-w-xl">
+          <UploadCard onUploaded={handleUploaded} />
+        </div>
+
+        <ol className="mt-9 grid w-full max-w-xl grid-cols-1 gap-4 sm:grid-cols-3">
+          {STEPS.map((step, index) => (
+            <li key={step.title} className="flex items-start gap-2.5">
+              <span className="figures pt-0.5 text-xs text-iris">{String(index + 1).padStart(2, "0")}</span>
+              <div>
+                <p className="text-sm font-medium text-foreground">{step.title}</p>
+                <p className="text-[13px] leading-normal text-subtle-foreground">{step.text}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+
+        <div className="mt-12 w-full max-w-xl">
+          <PapersList />
+        </div>
+      </main>
+    </div>
+  );
+}
+
+export default function HomePage() {
   return (
     <Suspense>
-    <RequireAuth>
-    <div className="fixed right-6 top-5 z-40"><AccountMenu /></div>
-    <main className="flex min-h-screen flex-col items-center justify-center gap-8 bg-background px-6 text-foreground">
-      <div className="text-center">
-        <h1 className="text-4xl font-semibold tracking-tight">ReSense</h1>
-        <p className="mt-2 text-muted-foreground">
-          Upload a research paper to get tone-adaptive summaries, grounded Q&amp;A, and visual analysis.
-        </p>
-      </div>
-      <FileUpload onUploadSuccess={handleUploadSuccess} />
-    </main>
-    </RequireAuth>
+      <RequireAuth>
+        <Home />
+      </RequireAuth>
     </Suspense>
   );
 }
