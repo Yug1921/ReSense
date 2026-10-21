@@ -60,16 +60,35 @@ async def check_references(req: ReferenceCheckRequest) -> ReferenceCheckResponse
             .execute()
         )
         if cached_result.data:
-            return _build_response(
-                req.paper_id, cached_result.data[0]["report_json"].get("items", []), cached=True
+            cached_items = cached_result.data[0]["report_json"].get("items", [])
+            retry = [item for item in cached_items if item.get("status") == "unavailable"]
+            if not retry:
+                return _build_response(req.paper_id, cached_items, cached=True)
+            # A provider was down or rate-limited last time: re-check only those
+            # references and keep every settled result as it was.
+            rechecked = await verify_all(
+                [item["raw"] for item in retry],
+                settings.crossref_mailto,
+                openalex_api_key=settings.openalex_api_key,
             )
+            by_index = {old["index"]: {**new, "index": old["index"]} for old, new in zip(retry, rechecked)}
+            items = [by_index.get(item["index"], item) for item in cached_items]
+            return _save_report(supabase, req.paper_id, items)
 
     refs = extract_references(paper.get("structure_json") or {}, paper.get("raw_text") or "")
-    items = await verify_all(refs, settings.crossref_mailto) if refs else []
-    response = _build_response(req.paper_id, items, cached=False)
+    items = (
+        await verify_all(refs, settings.crossref_mailto, openalex_api_key=settings.openalex_api_key)
+        if refs
+        else []
+    )
+    return _save_report(supabase, req.paper_id, items)
+
+
+def _save_report(supabase, paper_id: str, items: list[dict]) -> ReferenceCheckResponse:
+    response = _build_response(paper_id, items, cached=False)
     supabase.table(INTEGRITY_TABLE).upsert(
         {
-            "paper_id": req.paper_id,
+            "paper_id": paper_id,
             "report_json": response.model_dump(exclude={"cached"}),
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },

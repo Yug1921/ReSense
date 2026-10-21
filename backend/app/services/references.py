@@ -109,6 +109,10 @@ _CLIENT_PACERS: "weakref.WeakKeyDictionary[httpx.AsyncClient, dict[str, _HostPac
 )
 
 
+# OpenAlex API key per report run; requests without one share a small anonymous quota.
+_CLIENT_OPENALEX_KEYS: "weakref.WeakKeyDictionary[httpx.AsyncClient, str]" = weakref.WeakKeyDictionary()
+
+
 def _provider_pacers(polite: bool) -> dict[str, _HostPacer]:
     # Crossref (from Dec 2025): query requests are limited to 1/s with 1
     # concurrent request on the public pool, 3/s with 3 concurrent on the
@@ -1557,6 +1561,9 @@ async def _verify_by_openalex(
     }
     if mailto:
         params["mailto"] = mailto
+    api_key = _CLIENT_OPENALEX_KEYS.get(client)
+    if api_key:
+        params["api_key"] = api_key
     response = await _get_with_retries(client, _OPENALEX_URL, params=params)
     if response.status_code >= 400:
         return _unavailable(
@@ -1797,8 +1804,13 @@ async def verify_reference(client: httpx.AsyncClient, ref_text: str, mailto: str
     """Verify identifiers directly, then use Crossref with OpenAlex fallback."""
     metadata = _reference_metadata(ref_text)
     primary = await _verify_reference_primary(client, ref_text, mailto)
-    if metadata.doi or metadata.arxiv_id or primary.get("status") == "verified":
+    if primary.get("status") == "verified":
         return primary
+    if metadata.doi or metadata.arxiv_id:
+        # Identifier lookups are authoritative; only fall back to an OpenAlex
+        # title search when the identifier's provider could not be reached.
+        if primary.get("status") != "unavailable" or not metadata.title:
+            return primary
 
     try:
         openalex = await _verify_by_openalex(client, ref_text, metadata, mailto)
@@ -1832,7 +1844,7 @@ async def verify_reference(client: httpx.AsyncClient, ref_text: str, mailto: str
     return openalex if openalex.get("status") != "not_found" else primary
 
 
-async def verify_all(refs: list[str], mailto: str) -> list[dict]:
+async def verify_all(refs: list[str], mailto: str, openalex_api_key: str = "") -> list[dict]:
     """Verify references with one shared client and polite concurrency."""
     headers = {"User-Agent": f"ReSense/1.0 (mailto:{mailto})"} if mailto else {}
     # Per-host pacers below enforce each provider's limits; this only bounds
@@ -1840,6 +1852,8 @@ async def verify_all(refs: list[str], mailto: str) -> list[dict]:
     semaphore = asyncio.Semaphore(4)
     async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
         _CLIENT_PACERS[client] = _provider_pacers(polite=bool(mailto))
+        if openalex_api_key:
+            _CLIENT_OPENALEX_KEYS[client] = openalex_api_key
         async def verify(index: int, reference: str) -> dict:
             async with semaphore:
                 try:

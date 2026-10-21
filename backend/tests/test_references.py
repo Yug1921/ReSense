@@ -1,5 +1,9 @@
 import unittest
+from unittest import mock
+
 import httpx
+
+from app.services import references as R
 
 from app.services.references import (
     _is_neurips_text,
@@ -709,6 +713,47 @@ class ReferenceTests(unittest.IsolatedAsyncioTestCase):
             result = await verify_reference(client, reference, "")
         self.assertEqual(result["status"], "verified")
         self.assertEqual(result["source"], "openalex")
+
+    async def test_doi_reference_falls_back_to_openalex_when_crossref_is_down(self):
+        async def handler(request):
+            if "api.crossref.org" in str(request.url):
+                return httpx.Response(503, request=request)
+            return httpx.Response(
+                200,
+                json={"results": [{
+                    "title": "A Bayesian View of Neural Compression",
+                    "publication_year": 2023,
+                    "doi": "https://doi.org/10.1000/xyz",
+                    "authorships": [{"author": {"display_name": "Nia Okafor"}}],
+                    "primary_location": {"source": {"display_name": "Journal of Unfamiliar Methods"}},
+                }]},
+                request=request,
+            )
+
+        reference = (
+            "Okafor N. 2023. A Bayesian View of Neural Compression. "
+            "Journal of Unfamiliar Methods. DOI: 10.1000/xyz."
+        )
+        async with _client(handler) as client:
+            result = await verify_reference(client, reference, "")
+        self.assertEqual(result["source"], "openalex")
+        self.assertNotEqual(result["status"], "unavailable")
+
+    async def test_openalex_api_key_is_sent_when_configured(self):
+        seen = []
+
+        async def handler(request):
+            if "api.openalex.org" in str(request.url):
+                seen.append(request.url.params.get("api_key"))
+                return httpx.Response(200, json={"results": []}, request=request)
+            return httpx.Response(200, json={"message": {"items": []}}, request=request)
+
+        reference = "Okafor N. 2023. A Bayesian View of Neural Compression. Journal of Unfamiliar Methods."
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+        with mock.patch.object(R.httpx, "AsyncClient", lambda **kw: real_client(transport=transport, **kw)):
+            await R.verify_all([reference], "", openalex_api_key="k123")
+        self.assertEqual(seen, ["k123"])
 
     async def test_openalex_not_called_for_doi_or_arxiv(self):
         calls = []
