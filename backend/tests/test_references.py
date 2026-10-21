@@ -1,5 +1,9 @@
 import unittest
+from unittest import mock
+
 import httpx
+
+from app.services import references as R
 
 from app.services.references import (
     _is_neurips_text,
@@ -710,6 +714,47 @@ class ReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "verified")
         self.assertEqual(result["source"], "openalex")
 
+    async def test_doi_reference_falls_back_to_openalex_when_crossref_is_down(self):
+        async def handler(request):
+            if "api.crossref.org" in str(request.url):
+                return httpx.Response(503, request=request)
+            return httpx.Response(
+                200,
+                json={"results": [{
+                    "title": "A Bayesian View of Neural Compression",
+                    "publication_year": 2023,
+                    "doi": "https://doi.org/10.1000/xyz",
+                    "authorships": [{"author": {"display_name": "Nia Okafor"}}],
+                    "primary_location": {"source": {"display_name": "Journal of Unfamiliar Methods"}},
+                }]},
+                request=request,
+            )
+
+        reference = (
+            "Okafor N. 2023. A Bayesian View of Neural Compression. "
+            "Journal of Unfamiliar Methods. DOI: 10.1000/xyz."
+        )
+        async with _client(handler) as client:
+            result = await verify_reference(client, reference, "")
+        self.assertEqual(result["source"], "openalex")
+        self.assertNotEqual(result["status"], "unavailable")
+
+    async def test_openalex_api_key_is_sent_when_configured(self):
+        seen = []
+
+        async def handler(request):
+            if "api.openalex.org" in str(request.url):
+                seen.append(request.url.params.get("api_key"))
+                return httpx.Response(200, json={"results": []}, request=request)
+            return httpx.Response(200, json={"message": {"items": []}}, request=request)
+
+        reference = "Okafor N. 2023. A Bayesian View of Neural Compression. Journal of Unfamiliar Methods."
+        transport = httpx.MockTransport(handler)
+        real_client = httpx.AsyncClient
+        with mock.patch.object(R.httpx, "AsyncClient", lambda **kw: real_client(transport=transport, **kw)):
+            await R.verify_all([reference], "", openalex_api_key="k123")
+        self.assertEqual(seen, ["k123"])
+
     async def test_openalex_not_called_for_doi_or_arxiv(self):
         calls = []
 
@@ -1213,3 +1258,134 @@ class ReferenceTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RealPaperRegressionTests(unittest.IsolatedAsyncioTestCase):
+    """Cases taken from the ResNet (CVPR 2016) and BERT (NAACL 2019) bibliographies."""
+
+    def test_pdf_ligatures_and_detached_accents_are_repaired(self):
+        refs = extract_references(
+            {"sections": {"References": (
+                "[1] K. Chatﬁeld and A. Zisserman. The devil is in the details. In BMVC , 2011.\n"
+                "[2] O. T¨ackstr¨om and G. Mont´ufar. A uniﬁed view of things. In ICML , 2012.\n"
+            )}},
+            "",
+        )
+        self.assertIn("Chatfield", refs[0])
+        self.assertIn("Täckström", refs[1])
+        self.assertIn("Montúfar", refs[1])
+        self.assertIn("unified", refs[1])
+        self.assertEqual(_reference_metadata(refs[0]).first_author, "chatfield")
+
+    def test_author_year_entry_without_year_joins_previous_entry(self):
+        text = (
+            "Andriy Mnih and Geoffrey E Hinton. 2009. A scalable hierarchical distributed language model . In\n"
+            "D. Koller, D. Schuurmans, Y. Bengio, and L. Bottou, editors, Advances in Neural Information\n"
+            "Processing Systems 21 , pages 1081–1088. Curran Associates, Inc.\n"
+            "Ankur P Parikh, Oscar Tackstrom, Dipanjan Das, and Jakob Uszkoreit. 2016. A decomposable\n"
+            "attention model for natural language inference. In EMNLP .\n"
+        )
+        refs = extract_references({"sections": {"References": text}}, "")
+        self.assertEqual(len(refs), 2)
+        self.assertIn("Koller", refs[0])
+
+    def test_title_keeps_question_mark_and_drops_venue(self):
+        title = extract_reference_title(
+            "Jason Yosinski, Jeff Clune, Yoshua Bengio, and Hod Lipson. 2014. How transferable are "
+            "features in deep neural networks? In Advances in neural information processing systems , "
+            "pages 3320–3328."
+        )
+        self.assertEqual(title, "How transferable are features in deep neural networks?")
+
+    def test_bare_arxiv_id_is_detected_and_removed_from_title(self):
+        reference = (
+            "[42] R. K. Srivastava, K. Greff, and J. Schmidhuber. Training very deep networks. "
+            "1507.06228 , 2015."
+        )
+        metadata = _reference_metadata(reference)
+        self.assertEqual(metadata.arxiv_id, "1507.06228")
+        self.assertEqual(metadata.title, "Training very deep networks")
+        self.assertIsNone(extract_arxiv_id("pages 1081–1088, 2009."))
+
+    def test_title_similarity_ignores_dropped_hyphens_editions_and_subtitles(self):
+        from app.services.references import _title_similarity
+
+        self.assertEqual(_title_similarity("Deeplysupervised nets", "Deeply-Supervised Nets"), 1.0)
+        self.assertEqual(
+            _title_similarity("A Multigrid Tutorial", "A Multigrid Tutorial, Second Edition"), 1.0
+        )
+        self.assertGreaterEqual(
+            _title_similarity(
+                "A unified architecture for natural language processing: Deep neural networks "
+                "with multitask learning",
+                "A unified architecture for natural language processing",
+            ),
+            0.8,
+        )
+
+    async def _openalex_result(self, reference, works):
+        async def handler(request):
+            if "api.openalex.org" in str(request.url):
+                self.assertNotIn("?", request.url.params.get("search", ""))
+                return httpx.Response(200, json={"results": works}, request=request)
+            return httpx.Response(200, json={"message": {"items": []}}, request=request)
+
+        async with _client(handler) as client:
+            return await verify_reference(client, reference, "")
+
+    @staticmethod
+    def _work(title, year, authors, work_type):
+        return {
+            "title": title,
+            "publication_year": year,
+            "type": work_type,
+            "authorships": [{"author": {"display_name": name}} for name in authors],
+        }
+
+    async def test_iclr_paper_with_only_arxiv_preprint_is_a_version_needing_review(self):
+        result = await self._openalex_result(
+            "[40] K. Simonyan and A. Zisserman. Very deep convolutional networks for large-scale "
+            "image recognition. In ICLR , 2015.",
+            [self._work(
+                "Very Deep Convolutional Networks for Large-Scale Image Recognition",
+                2014, ["Karen Simonyan", "Andrew Zisserman"], "preprint",
+            )],
+        )
+        # The preprint shows the work exists but does not confirm the ICLR
+        # publication itself, so it is flagged for review rather than verified.
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["publication_relation"], "same_work_version")
+
+    async def test_conference_paper_matching_preprint_record_same_year_is_verified(self):
+        result = await self._openalex_result(
+            "[16] S. Ioffe and C. Szegedy. Batch normalization: Accelerating deep network training "
+            "by reducing internal covariate shift. In ICML , 2015.",
+            [self._work(
+                "Batch Normalization: Accelerating Deep Network Training by Reducing Internal "
+                "Covariate Shift", 2015, ["Sergey Ioffe", "Christian Szegedy"], "preprint",
+            )],
+        )
+        self.assertEqual(result["status"], "verified")
+
+    async def test_same_title_and_author_far_apart_in_years_needs_review_not_not_found(self):
+        result = await self._openalex_result(
+            "[20] A. Krizhevsky. Learning multiple layers of features from tiny images. "
+            "Tech Report , 2009.",
+            [self._work(
+                "Learning Multiple Layers of Features from Tiny Images", 2024,
+                ["Alex Krizhevsky"], "article",
+            )],
+        )
+        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["publication_relation"], "possible_related")
+
+    async def test_question_mark_is_stripped_from_openalex_search(self):
+        result = await self._openalex_result(
+            "Jason Yosinski, Jeff Clune, Yoshua Bengio, and Hod Lipson. 2014. How transferable are "
+            "features in deep neural networks? In Advances in neural information processing systems.",
+            [self._work(
+                "How transferable are features in deep neural networks?", 2014,
+                ["Jason Yosinski", "Jeff Clune", "Yoshua Bengio", "Hod Lipson"], "article",
+            )],
+        )
+        self.assertNotEqual(result["status"], "unavailable")

@@ -82,7 +82,7 @@ class IntegrityRouterTests(unittest.TestCase):
              "error": "Crossref returned 429"},
         ]
 
-        async def fake_verify_all(refs, mailto):
+        async def fake_verify_all(refs, mailto, **_):
             return items
 
         with mock.patch.object(integrity, "verify_all", fake_verify_all):
@@ -106,7 +106,7 @@ class IntegrityRouterTests(unittest.TestCase):
             "integrity_reports": [{"paper_id": "p1", "report_json": {"items": cached_items}}],
         })
 
-        async def fail_verify_all(refs, mailto):
+        async def fail_verify_all(refs, mailto, **_):
             raise AssertionError("verify_all should not run for a cached report")
 
         with mock.patch.object(integrity, "verify_all", fail_verify_all):
@@ -114,6 +114,31 @@ class IntegrityRouterTests(unittest.TestCase):
         self.assertTrue(body["cached"])
         self.assertEqual((body["total"], body["not_found"]), (1, 1))
         self.assertEqual(db.upserts, [])
+
+    def test_cached_report_rechecks_only_unavailable_items(self):
+        cached_items = [
+            {"index": 1, "raw": "a", "status": "verified", "similarity": 1.0},
+            {"index": 2, "raw": "b", "status": "unavailable", "similarity": 0.0,
+             "error": "OpenAlex returned 429"},
+        ]
+        db = _FakeSupabase({
+            "papers": [_paper()],
+            "integrity_reports": [{"paper_id": "p1", "report_json": {"items": cached_items}}],
+        })
+        seen = []
+
+        async def fake_verify_all(refs, mailto, **_):
+            seen.append(refs)
+            return [{"index": 1, "raw": "b", "status": "verified", "similarity": 0.95,
+                     "source": "openalex"}]
+
+        with mock.patch.object(integrity, "verify_all", fake_verify_all):
+            body = self._post(db).json()
+        self.assertEqual(seen, [["b"]])
+        self.assertEqual([i["index"] for i in body["items"]], [1, 2])
+        self.assertEqual((body["verified"], body["unavailable"]), (2, 0))
+        self.assertEqual(body["items"][1]["source"], "openalex")
+        self.assertEqual(len(db.upserts), 1)
 
 
 class VerifyAllTests(unittest.IsolatedAsyncioTestCase):

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     max_upload_mb: int = 20
     allowed_origins: str = "http://localhost:3000"
     crossref_mailto: str = ""
+    openalex_api_key: str = ""  # free key from openalex.org; anonymous use has a tiny daily quota
 
     @property
     def allowed_origins_list(self) -> list[str]:
