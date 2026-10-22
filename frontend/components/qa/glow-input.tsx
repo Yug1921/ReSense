@@ -4,7 +4,7 @@ import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent }
 import { ArrowUp, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const MAX_HEIGHT = 168; // about six lines, then it scrolls
+const MAX_HEIGHT = 168; // about six lines, then it scrolls (scrollbar hidden)
 
 /**
  * The ReSense question box. Its signature glow follows the text cursor while
@@ -49,6 +49,8 @@ export function GlowInput({
     if (!textarea) return;
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_HEIGHT)}px`;
+    // Only very long questions scroll, and even then without a visible bar.
+    textarea.style.overflowY = textarea.scrollHeight > MAX_HEIGHT ? "auto" : "hidden";
   }, [value]);
 
   function submit(event?: FormEvent) {
@@ -106,7 +108,7 @@ export function GlowInput({
             requestAnimationFrame(measureCaret);
           }}
           onBlur={() => setFocused(false)}
-          className="relative block w-full resize-none bg-transparent px-5 pb-1 pt-4 text-[15px] leading-6 text-heading outline-none placeholder:text-subtle-foreground"
+          className="relative block w-full resize-none overflow-y-hidden bg-transparent [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-5 pb-1 pt-4 text-[15px] leading-6 text-heading outline-none placeholder:text-subtle-foreground"
         />
         <div
           aria-hidden

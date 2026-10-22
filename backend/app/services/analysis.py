@@ -12,6 +12,7 @@ import unicodedata
 from collections import Counter
 
 from app.services.parser import detect_structure
+from app.services import providers
 from app.services.llm import call_openrouter, LLMRequestError
 from app.services.prompts import build_classification_prompt
 
@@ -179,13 +180,19 @@ async def classify_paper(raw_text: str) -> dict | None:
     """Returns None (rather than raising) on ANY failure here — network blips, OpenRouter errors, malformed JSON, whatever. Classification is a nice-to-have; the two computed charts (section lengths, keywords) must never be taken down by it."""
 
     system_prompt, user_prompt = build_classification_prompt(raw_text)
-    try:
-        raw_response = await call_openrouter(system_prompt, user_prompt, max_tokens=350, temperature=0.1)
-
-    except Exception:
-        return None
-
-    except LLMRequestError:
+    # Scored once per paper and saved, so use the best model (Gemini) whatever
+    # the AI menu says; fall back to the usual chain if Gemini can't answer.
+    raw_response = None
+    for provider in ("gemini", "auto"):
+        token = providers.chosen_provider.set(provider)
+        try:
+            raw_response = await call_openrouter(system_prompt, user_prompt, max_tokens=350, temperature=0.1)
+            break
+        except Exception:
+            continue
+        finally:
+            providers.chosen_provider.reset(token)
+    if raw_response is None:
         return None
 
     match = re.search(r"\{[^{}]*\}", raw_response, re.DOTALL)

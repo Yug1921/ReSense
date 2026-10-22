@@ -76,3 +76,26 @@ class SectionFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClassificationProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scoring_uses_gemini_even_when_menu_says_openrouter(self):
+        from unittest import mock
+        from app.services import analysis, providers
+
+        seen = []
+
+        async def fake_call(*_args, **_kwargs):
+            seen.append(providers.chosen_provider.get())
+            if len(seen) == 1:
+                raise analysis.LLMRequestError("gemini busy")
+            return '{"paper_type": "survey", "complexity": "high", "complexity_score": 7}'
+
+        token = providers.chosen_provider.set("openrouter")
+        try:
+            with mock.patch.object(analysis, "call_openrouter", fake_call):
+                result = await analysis.classify_paper("text " * 50)
+        finally:
+            providers.chosen_provider.reset(token)
+        self.assertEqual(seen, ["gemini", "auto"])
+        self.assertEqual(result["complexity_score"], 7)

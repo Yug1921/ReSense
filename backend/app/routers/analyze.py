@@ -25,7 +25,7 @@ from app.auth import CurrentUser, current_user
 router = APIRouter(tags=["analyze"])
 
 # Bump when what gets computed changes, so saved analyses are recomputed.
-ANALYSIS_VERSION = 5
+ANALYSIS_VERSION = 6
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -55,7 +55,9 @@ async def analyze_paper(req: AnalyzeRequest, user: CurrentUser = Depends(current
     )
     if cached.data:
         data = cached.data[0]["chart_data_json"]
-        if data.get("version") == ANALYSIS_VERSION:
+        # A paper the AI couldn't score last time is tried again.
+        scored = (data.get("classification") or {}).get("paper_type") not in (None, "unknown")
+        if data.get("version") == ANALYSIS_VERSION and scored:
             return AnalyzeResponse(
                 paper_id=req.paper_id,
                 section_lengths=data["section_lengths"],
@@ -70,7 +72,11 @@ async def analyze_paper(req: AnalyzeRequest, user: CurrentUser = Depends(current
     keywords = keyword_frequency(paper["raw_text"])
     paper_structure_score = structure_score(section_lengths)
     classification = await classify_paper(paper["raw_text"])  # may be None on LLM failure
-    score = deterministic_complexity_score(paper["raw_text"], section_lengths)
+    # Gemini's reading of the paper decides the level; the word-count estimate
+    # is only used when no AI could score it.
+    score = (classification or {}).get("complexity_score") or deterministic_complexity_score(
+        paper["raw_text"], section_lengths
+    )
     complexity = next(label for ceiling, label in ((2, "low"), (4, "medium-low"), (6, "medium"), (8, "high"), (10, "very high")) if score <= ceiling)
     # When the AI is unavailable we say so ("unknown") rather than guess a type.
     classification = classification or {"paper_type": "unknown"}
