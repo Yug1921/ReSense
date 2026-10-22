@@ -3,8 +3,9 @@ import type { Metadata, Viewport } from "next";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { Newsreader } from "next/font/google";
-import { Toaster } from "sonner";
 import { AuthProvider } from "@/components/auth/auth-provider";
+import { ThemedToaster } from "@/components/theme/themed-toaster";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 // Serif for long-form reading (summaries and answers). Self-hosted at build time.
@@ -23,8 +24,11 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0a0a0a",
-  colorScheme: "dark",
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+    { media: "(prefers-color-scheme: light)", color: "#f3f1ec" },
+  ],
+  colorScheme: "dark light",
 };
 
 export default function RootLayout({
@@ -36,19 +40,15 @@ export default function RootLayout({
     <html
       lang="en"
       className={`dark ${GeistSans.variable} ${GeistMono.variable} ${newsreader.variable}`}
+      // The theme script below changes the class before React loads.
+      suppressHydrationWarning
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="font-sans antialiased">
         <AuthProvider>{children}</AuthProvider>
-        <Toaster
-          theme="dark"
-          position="top-center"
-          toastOptions={{
-            classNames: {
-              toast: "!bg-raised !border-border !text-foreground",
-              description: "!text-muted-foreground",
-            },
-          }}
-        />
+        <ThemedToaster />
       </body>
     </html>
   );

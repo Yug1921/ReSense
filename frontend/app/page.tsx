@@ -7,6 +7,7 @@ import type { UploadResponse } from "@/lib/api";
 import { RequireAuth } from "@/components/auth/require-auth";
 import { AccountMenu } from "@/components/auth/account-menu";
 import { AiPicker } from "@/components/ai/ai-picker";
+import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Logo } from "@/components/brand/logo";
 import { UploadCard } from "@/components/upload/upload-card";
 import { PapersList } from "@/components/home/papers-list";
@@ -32,6 +33,7 @@ function Home() {
           <Logo />
           <div className="flex items-center gap-3">
             <AiPicker />
+            <ThemeToggle />
             <AccountMenu />
           </div>
         </div>

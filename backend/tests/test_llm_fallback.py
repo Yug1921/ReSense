@@ -151,6 +151,34 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
                 await llm.call_openrouter("sys", "q")
 
 
+class AnswerCleanupTests(FallbackTests):
+    async def test_reasoning_reply_moves_to_next_model(self):
+        def behaviour(model):
+            if model.startswith("gemini"):
+                return _ok("The user is asking for the main results. I need to extract them.")
+            return _ok("<answer>The main result is X.</answer>")
+        with self._respond(behaviour):
+            self.assertEqual(await llm.call_openrouter("sys", "short question"), "The main result is X.")
+
+    async def test_answer_after_thinking_is_kept(self):
+        reply = "Let me check the excerpts first.\n<answer>**55%** used content-based filtering.</answer>"
+        with self._respond(lambda model: _ok(reply)):
+            self.assertEqual(await llm.call_openrouter("sys", "q"), "**55%** used content-based filtering.")
+
+    async def test_long_prompt_goes_to_gemini_only(self):
+        sent = []
+
+        async def fake_post(payload, base_url=None, api_key=None):
+            sent.append((payload["model"], payload["messages"][1]["content"]))
+            if payload["model"].startswith("gemini"):
+                raise llm.LLMProviderUnavailableError("503")
+            return _ok("ok")
+        with mock.patch.object(llm, "_post_chat_completion", fake_post):
+            await llm.call_openrouter("sys", "short", long_context_user_prompt="whole paper")
+        self.assertEqual(sent[0][1], "whole paper")
+        self.assertEqual(sent[-1][1], "short")
+
+
 class ChosenProviderTests(FallbackTests):
     async def test_choice_limits_to_that_provider(self):
         token = providers.chosen_provider.set("openrouter")

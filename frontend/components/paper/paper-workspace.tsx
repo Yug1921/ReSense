@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
@@ -14,6 +14,7 @@ import { AskPanel } from "@/components/qa/ask-panel";
 import { IntegrityPanel } from "@/components/integrity/integrity-panel";
 import { AccountMenu } from "@/components/auth/account-menu";
 import { AiPicker } from "@/components/ai/ai-picker";
+import { ThemeToggle } from "@/components/theme/theme-toggle";
 
 const TABS = [
   { id: "overview", label: "Overview" },
@@ -49,6 +50,23 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
   const requestedTab = searchParams.get("tab");
   const activeTab: TabId = isTabId(requestedTab) ? requestedTab : "overview";
   const tabRefs = useRef<Partial<Record<TabId, HTMLButtonElement | null>>>({});
+  const indicatorRef = useRef<HTMLSpanElement>(null);
+
+  // Slide the underline to the selected tab (and keep it there on resize).
+  useLayoutEffect(() => {
+    function place() {
+      const tab = tabRefs.current[activeTab];
+      const indicator = indicatorRef.current;
+      if (!tab || !indicator) return;
+      indicator.style.width = `${tab.offsetWidth}px`;
+      indicator.style.transform = `translateX(${tab.offsetLeft}px)`;
+      // No slide on first placement, only on changes after it.
+      requestAnimationFrame(() => indicator.setAttribute("data-ready", ""));
+    }
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [activeTab]);
 
   const [load, setLoad] = useState<LoadState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
@@ -160,6 +178,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
             )}
           </div>
           <AiPicker />
+          <ThemeToggle />
           <AccountMenu />
         </div>
         <div
@@ -167,7 +186,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
           aria-label="Paper sections"
           onKeyDown={handleTabKeys}
           // Tab labels line up with the paper title above (back button 32px + 12px gap, minus the tab's own padding).
-          className="mx-auto flex max-w-6xl gap-1 overflow-x-auto overflow-y-hidden px-4 pl-[calc(1rem+30px)] [scrollbar-width:none] sm:px-10 sm:pl-[calc(2.5rem+30px)] [&::-webkit-scrollbar]:hidden"
+          className="relative mx-auto flex max-w-6xl gap-1 overflow-x-auto overflow-y-hidden px-4 pl-[calc(1rem+30px)] [scrollbar-width:none] sm:px-10 sm:pl-[calc(2.5rem+30px)] [&::-webkit-scrollbar]:hidden"
         >
           {TABS.map((tab) => {
             const selected = tab.id === activeTab;
@@ -185,16 +204,19 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
                 tabIndex={selected ? 0 : -1}
                 onClick={() => selectTab(tab.id)}
                 className={cn(
-                  "-mb-px border-b-2 px-3.5 py-2.5 text-sm transition-colors",
-                  selected
-                    ? "border-iris text-heading"
-                    : "border-transparent text-muted-foreground hover:text-heading"
+                  "px-3.5 py-2.5 text-sm transition-colors duration-300",
+                  selected ? "text-heading" : "text-muted-foreground hover:text-heading"
                 )}
               >
                 {tab.label}
               </button>
             );
           })}
+          <span
+            ref={indicatorRef}
+            aria-hidden
+            className="pointer-events-none absolute bottom-0 left-0 h-0.5 w-0 rounded-full bg-iris data-[ready]:transition-[transform,width] data-[ready]:duration-300 data-[ready]:ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+          />
         </div>
       </header>
 
@@ -208,6 +230,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
               id={`panel-${tab.id}`}
               aria-labelledby={`tab-${tab.id}`}
               hidden={tab.id !== activeTab}
+              className="animate-panel-in"
             >
               {tab.id === "overview" && (
                 <OverviewPanel

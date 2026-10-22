@@ -50,6 +50,18 @@ class RealPaperOverviewTests(unittest.TestCase):
         self.assertNotIn("ne-tuning", bert)
 
 
+class StructureTests(unittest.TestCase):
+    def test_long_survey_headings_ignore_lists_footnotes_and_reference_numbers(self):
+        paper = _parsed("pdf3_30pages.pdf")
+        labels = [s["label"] for s in section_length_stats(paper.structure, paper.raw_text)]
+        self.assertEqual(labels, [
+            "Opening context", "Introduction", "Definitions", "Related research fields",
+            "Survey of the evaluations", "Survey of the recommendation classes",
+            "Survey of the research field and shortcomings", "Summary and outlook", "References",
+        ])
+        self.assertIn("  4.7 Reproducibility and the butterfly effect", paper.structure["outline"])
+
+
 class SectionFallbackTests(unittest.TestCase):
     def test_falls_back_to_parser_sections_without_junk_labels(self):
         structure = {"sections": {

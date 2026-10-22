@@ -11,6 +11,7 @@ import re
 import unicodedata
 from collections import Counter
 
+from app.services.parser import detect_structure
 from app.services.llm import call_openrouter, LLMRequestError
 from app.services.prompts import build_classification_prompt
 
@@ -64,82 +65,37 @@ def _clean_section_label(label: str) -> str | None:
     return cleaned
 
 
-_TOP_HEADING_RE = re.compile(r"^(\d{1,2})\.?\s+([A-Z][^\n]{1,70})$")
-_NAMED_HEADING_RE = re.compile(
-    r"^(abstract|references|bibliography|acknowledge?ments?|conclusions?|appendix(?:es)?)\b[\s.:]*",
-    re.IGNORECASE,
-)
-
-
-def _is_heading_title(title: str) -> bool:
-    """A numbered line is a heading only if it reads like a title, not a sentence or footnote."""
-    words = title.split()
-    return 0 < len(words) <= 7 and not title.endswith(("-", ".", ",", ";")) and not re.search(r"\d{3,}", title)
-
-
-def _sections_from_text(raw_text: str) -> list[dict]:
-    """
-    Split the paper at its top-level headings: "1 Introduction", "2. Related Work", ...
-    plus Abstract, References, Acknowledgments and Appendix. Numbered headings must
-    count up one at a time, which skips table rows, footnotes and subsections
-    ("4.1 GLUE" stays inside "4 Experiments").
-    """
-    sections: list[dict] = []
-    current: dict | None = None
-    last_number = 0
-    in_back_matter = False
-
-    for line in raw_text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        label = None
-        numbered = _TOP_HEADING_RE.match(stripped)
-        named = _NAMED_HEADING_RE.match(stripped)
-        if numbered and not in_back_matter:
-            number, title = int(numbered.group(1)), numbered.group(2).strip()
-            if number == last_number + 1 and _is_heading_title(title):
-                label, last_number = title, number
-        elif named and len(stripped.split()) <= 6:
-            name = named.group(1).lower()
-            if name.startswith("appendix"):
-                if not any(s["label"] == "Appendix" for s in sections):
-                    label, in_back_matter = "Appendix", True
-            elif name in ("references", "bibliography"):
-                if not any(s["label"] == "References" for s in sections):
-                    label = "References"
-            elif not any(s["label"].lower() == name for s in sections):
-                label = stripped.rstrip(" .:")
-                label = label[0].upper() + label[1:].lower()
-
-        if label:
-            current = {"label": label, "value": 0}
-            sections.append(current)
-            continue
-        if current is not None:
-            current["value"] += len(stripped.split())
-
-    return [s for s in sections if s["value"] > 0]
-
-
 def section_length_stats(structure: dict | None, raw_text: str = "") -> list[dict]:
-    """Words per top-level section, in reading order."""
-    stats = _sections_from_text(raw_text) if raw_text else []
-    if len(stats) >= 2:
-        return stats
+    """Words per top-level section, in reading order.
 
-    # Fallback: the parser's detected sections, minus labels that are clearly
-    # not headings (numbers, model names such as "VGG-16", the title block).
-    sections = (structure or {}).get("sections") or {}
-    fallback = []
+    Uses the parser's heading rules on the text itself, so papers saved
+    before those rules improved are counted the same way as new ones.
+    Appendix sections (A, B, C after the references) are counted together.
+    """
+    detected = detect_structure(raw_text)["sections"] if raw_text else {}
+    from_text = len([name for name in detected if name != "preamble"]) >= 2
+    sections = detected if from_text else (structure or {}).get("sections") or {}
+    stats: list[dict] = []
     for name, text in sections.items():
-        label = _clean_section_label(name)
-        if not label or label == "Opening context" or re.search(r"\d", label):
-            continue
         words = len(text.split())
-        if words >= 30:
-            fallback.append({"label": label, "value": words})
-    return fallback
+        if name == "preamble":
+            if from_text and words >= 30:
+                stats.append({"label": "Opening context", "value": words})
+            continue
+        if from_text and re.match(r"^[A-H]\.?\s+[A-Z]", name):
+            label = "Appendix"
+        else:
+            label = re.sub(r"^\s*(?:\d+(?:\.\d+)*|[IVX]+)[\s.)-]+(?=[A-Z])", "", name).strip(" .:")
+            label = _clean_section_label(re.sub(r"\s\(\d+\)$", "", label))
+        if not label or words == 0:
+            continue
+        if not from_text and (re.search(r"\d", label) or words < 30):
+            continue  # old parser output: skip table cells such as "VGG-16"
+        if stats and stats[-1]["label"] == label:
+            stats[-1]["value"] += words
+        else:
+            stats.append({"label": label, "value": words})
+    return stats
 
 
 def structure_score(section_lengths: list[dict]) -> int:

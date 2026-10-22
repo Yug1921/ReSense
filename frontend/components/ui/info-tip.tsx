@@ -32,7 +32,7 @@ export function InfoTip({ label, children, className }: { label: string; childre
         <span
           id={id}
           role="tooltip"
-          className="absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-lg border border-border bg-raised px-3 py-2 text-left text-xs leading-relaxed text-foreground shadow-lg shadow-black/40"
+          className="absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-lg border border-border bg-raised px-3 py-2 text-left text-xs leading-relaxed text-foreground shadow-lg shadow-shadow"
         >
           {children}
         </span>

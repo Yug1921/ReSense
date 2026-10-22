@@ -27,11 +27,33 @@ _NO_REASONING_SUFFIX = (
 )
 
 
+_ANSWER_TAG_RE = re.compile(r"<answer>(.*?)(?:</answer>|$)", re.DOTALL | re.IGNORECASE)
+# Openings that mean a model is thinking out loud instead of answering.
+_REASONING_START_RE = re.compile(
+    r"^\W*(?:the user (?:is asking|asks|wants|has asked)|the question (?:is asking|asks)|"
+    r"we need to|i need to|i should|let me|let's (?:look|see|think|review)|okay,? (?:so|let)|"
+    r"alright,? |first,? i|to answer this,? i|my task is|the task is)",
+    re.IGNORECASE,
+)
+
+
+class LeakedReasoningError(Exception):
+    pass
+
+
 def _strip_leaked_reasoning(content: str) -> str:
-    """Safety net: strip an explicit reasoning block emitted by a model."""
+    """Return only the answer: drop <think> blocks, unwrap <answer> tags,
+    and reject replies that are the model's reasoning rather than an answer."""
     if not content:
         return content
-    return _THINK_TAG_RE.sub("", content).strip()
+    content = _THINK_TAG_RE.sub("", content).strip()
+    tagged = _ANSWER_TAG_RE.findall(content)
+    if tagged and tagged[-1].strip():
+        return tagged[-1].strip()
+    content = re.sub(r"</?answer>", "", content, flags=re.IGNORECASE).strip()
+    if _REASONING_START_RE.match(content):
+        raise LeakedReasoningError("The model wrote its reasoning instead of an answer.")
+    return content
 
 
 class LLMRequestError(Exception):
@@ -124,10 +146,14 @@ async def call_openrouter(
     user_prompt: str,
     max_tokens: int = 900,
     temperature: float = 0.4,
+    long_context_user_prompt: str | None = None,
 ) -> str:
     """
     Ask the best available free model, falling through the ranked list
     (providers.candidates) until one answers.
+
+    long_context_user_prompt: a fuller prompt (e.g. the whole paper) sent
+    instead of user_prompt to models with a very long context (Gemini).
     """
     messages = [
         {"role": "system", "content": system_prompt + _NO_REASONING_SUFFIX},
@@ -157,16 +183,22 @@ async def call_openrouter(
     last_error: Exception | None = None
     rate_limited = 0
     for candidate in candidates:
+        candidate_messages = messages
+        if long_context_user_prompt and candidate.provider == "gemini":
+            candidate_messages = [messages[0], {"role": "user", "content": long_context_user_prompt}]
         payload = {
             "model": candidate.model,
-            "messages": messages,
+            "messages": candidate_messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
             **providers.request_options(candidate),
         }
         try:
             data = await _post_chat_completion(payload, candidate.base_url, candidate.api_key)
-            content = _strip_leaked_reasoning(data["choices"][0]["message"]["content"] or "")
+            try:
+                content = _strip_leaked_reasoning(data["choices"][0]["message"]["content"] or "")
+            except LeakedReasoningError as exc:
+                raise LLMRequestError(f"{candidate.key}: {exc}") from exc
             if not content:
                 raise LLMRequestError(f"{candidate.key} returned an empty reply.")
             return content.strip()

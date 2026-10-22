@@ -161,7 +161,7 @@ export function OverviewPanel({ paperId, wordCount, initialAnalysis, onOpenTab }
           <Fact
             title="References"
             tip="Entries found in the paper's reference list. The Integrity tab checks each one against published records."
-            value={data.reference_count >= 60 ? "60+ cited" : `${data.reference_count} cited`}
+            value={`${data.reference_count} cited`}
             note={
               data.reference_count > 0 ? (
                 <button type="button" onClick={() => onOpenTab("integrity")} className="text-iris hover:text-iris-strong">

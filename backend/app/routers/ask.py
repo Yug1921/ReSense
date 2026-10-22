@@ -14,16 +14,17 @@ import re
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, CHAT_MESSAGES_TABLE, FIGURES_TABLE
 from app.services.figures_data import ensure_figures_captioned
 from app.models.schemas import AskRequest, AskResponse
-from app.services.chunking import chunk_paper
+from app.services.chunking import chunk_paper, paper_outline
+from app.services.parser import detect_structure
 from app.services.retrieval import retrieve_relevant_chunks
 from app.services.llm import call_openrouter, LLMRateLimitError, LLMRequestError
-from app.services.prompts import build_ask_prompt
+from app.services.prompts import build_ask_prompt, build_ask_full_paper_prompt
 
 from app.auth import CurrentUser, current_user
 
 router = APIRouter(tags=["ask"])
 
-_TOP_K_CHUNKS = 6  # larger papers have more relevant sections to draw from
+_TOP_K_CHUNKS = 10  # about 1,800 words: room for a broad answer, still fits Groq's free limit
 _MAX_HISTORY_TURNS = 6  # keeps the context window bounded to recent turns
 
 
@@ -105,16 +106,35 @@ async def ask_paper(req: AskRequest, user: CurrentUser = Depends(current_user)) 
         for t in tables
     ]
     chunks = chunk_paper(paper["raw_text"], paper.get("structure_json"), extra_chunks=extra_chunks)
-    relevant_chunks = retrieve_relevant_chunks(question, chunks, top_k=_TOP_K_CHUNKS)
-    preamble_chunks = [c for c in chunks if c["section"].lower() == "preamble"]
-    for chunk in preamble_chunks:
-        if chunk not in relevant_chunks:
-            relevant_chunks = [chunk] + relevant_chunks
-
-    system_prompt, user_prompt = build_ask_prompt(question, relevant_chunks, chat_history)
+    previous_question = next(
+        (turn["content"] for turn in reversed(chat_history) if turn["role"] == "user"), ""
+    )
+    relevant_chunks = retrieve_relevant_chunks(
+        question, chunks, top_k=_TOP_K_CHUNKS, context=previous_question
+    )
+    outline = paper_outline(paper["raw_text"])
+    title = paper.get("filename") or ""
+    system_prompt, user_prompt = build_ask_prompt(
+        question, relevant_chunks, chat_history, outline=outline, title=title
+    )
+    # Long-context models (Gemini) read the whole paper, like pasting it into a chat.
+    _, full_prompt = build_ask_full_paper_prompt(
+        question,
+        detect_structure(paper["raw_text"])["sections"],
+        chat_history,
+        outline=outline,
+        title=title,
+        extras=extra_chunks,
+    )
 
     try:
-        answer = await call_openrouter(system_prompt, user_prompt, max_tokens=500)
+        answer = await call_openrouter(
+            system_prompt,
+            user_prompt,
+            max_tokens=1500,
+            temperature=0.2,
+            long_context_user_prompt=full_prompt,
+        )
     except LLMRateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except LLMRequestError as exc:
@@ -128,5 +148,6 @@ async def ask_paper(req: AskRequest, user: CurrentUser = Depends(current_user)) 
         ]
     ).execute()
 
-    used_sections = sorted({c["section"] for c in relevant_chunks})
+    # Most relevant first, each section once.
+    used_sections = list(dict.fromkeys(c["section"] for c in relevant_chunks))[:5]
     return AskResponse(paper_id=req.paper_id, answer=answer, used_sections=used_sections)

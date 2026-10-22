@@ -20,7 +20,9 @@ interface Message extends ChatTurn {
 
 function cleanSection(name: string) {
   if (name.trim().toLowerCase() === "preamble") return "Opening page";
-  return name.replace(/^\s*(?:\d+(?:\.\d+)*|[IVX]+)[.)]?\s+/i, "").trim();
+  // "4 Survey of the evaluations › 4.3 Coverage" reads best as its subsection.
+  const part = name.split("›").pop() ?? name;
+  return part.replace(/^\s*(?:\d+(?:\.\d+)*|[IVX]+)[.)]?\s+/i, "").trim();
 }
 
 function errorMessage(err: unknown) {

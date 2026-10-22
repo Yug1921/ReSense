@@ -25,7 +25,7 @@ from app.auth import CurrentUser, current_user
 router = APIRouter(tags=["analyze"])
 
 # Bump when what gets computed changes, so saved analyses are recomputed.
-ANALYSIS_VERSION = 4
+ANALYSIS_VERSION = 5
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)

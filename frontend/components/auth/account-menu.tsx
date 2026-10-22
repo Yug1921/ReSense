@@ -39,7 +39,7 @@ export function AccountMenu() {
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-xl border border-border bg-raised shadow-lg shadow-black/40"
+          className="absolute right-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-xl border border-border bg-raised shadow-lg shadow-shadow"
         >
           <div className="border-b border-divider px-4 py-3">
             <p className="text-xs text-subtle-foreground">Signed in as</p>

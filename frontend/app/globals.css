@@ -4,9 +4,9 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * ReSense is dark-only for now, so the palette lives on :root and the `dark`
- * class on <html> only keeps `dark:` variants working.
- * Every text colour below passes WCAG AA on --background.
+ * Dark is the default palette (on :root); [data-theme="light"] swaps in a
+ * soft, warm light palette. The theme is set on <html> before first paint
+ * (see lib/theme.ts). Every text colour passes WCAG AA on --background.
  */
 :root {
   color-scheme: dark;
@@ -59,6 +59,55 @@
   --chart-4: var(--mist);
   --chart-5: var(--sand);
   --radius: 0.625rem;
+  --shadow-color: rgb(0 0 0 / 0.45);
+}
+
+/* Soft light: warm paper tones rather than pure white, so it is easy on the eyes. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --background: #f3f1ec;
+  --card: #faf9f6;
+  --raised: #ebe8e1;
+  --divider: #e3dfd6;
+  --border: #d6d1c6;
+  --border-strong: #bfb9ac;
+
+  --heading: #19191c;
+  --foreground: #2b2b30;
+  --muted-foreground: #55555c;
+  --subtle-foreground: #646469;
+
+  --iris: #4f5bc4;
+  --iris-strong: #39439f;
+  --iris-ink: #ffffff;
+
+  --sage: #2a7550;
+  --honey: #8a600c;
+  --rose: #b4443f;
+  --slate: #5a6270;
+  --mist: #286f93;
+  --sand: #8a6539;
+
+  --shadow-color: rgb(60 50 30 / 0.16);
+}
+
+/* Theme switch: cross-fade the page (View Transitions), or ease colours where unsupported. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.4s;
+  animation-timing-function: ease-in-out;
+}
+.theme-fading,
+.theme-fading *,
+.theme-fading *::before,
+.theme-fading *::after {
+  transition:
+    background-color 0.4s ease,
+    border-color 0.4s ease,
+    color 0.4s ease,
+    fill 0.4s ease,
+    stroke 0.4s ease !important;
 }
 
 @theme inline {
@@ -68,6 +117,7 @@
   --color-raised: var(--raised);
   --color-divider: var(--divider);
   --color-border-strong: var(--border-strong);
+  --color-shadow: var(--shadow-color);
   --color-heading: var(--heading);
   --color-subtle-foreground: var(--subtle-foreground);
   --color-iris: var(--iris);
@@ -110,6 +160,30 @@
 
   /* Indeterminate progress (reference check) */
   --animate-scan: scan 1.6s ease-in-out infinite;
+  /* Menus and panels appearing */
+  --animate-pop-in: pop-in 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-panel-in: panel-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
 
   @keyframes scan {
     from {
