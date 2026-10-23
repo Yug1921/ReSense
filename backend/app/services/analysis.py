@@ -8,8 +8,11 @@ so re-viewing the analysis tab is always free after the first load.
 """
 import json
 import re
+import unicodedata
 from collections import Counter
 
+from app.services.parser import detect_structure
+from app.services import providers
 from app.services.llm import call_openrouter, LLMRequestError
 from app.services.prompts import build_classification_prompt
 
@@ -22,6 +25,17 @@ _STOPWORDS = {
     "use", "based", "between", "over", "each", "more", "most", "other",
     "may", "will", "would", "could", "should", "one", "two", "three",
     "figure", "table", "et", "al", "i.e", "e.g",
+    # Layout and reference words that say nothing about the topic
+    "fig", "figs", "figures", "tables", "eq", "eqn", "eqs", "sec", "section", "sections",
+    "ref", "refs", "arxiv", "preprint", "proceedings", "conference", "pages", "vol",
+    # More function words
+    "where", "thus", "however", "both", "all", "any", "only", "here", "there", "about",
+    "after", "before", "through", "under", "without", "within", "because", "since",
+    "does", "nor", "out", "very", "just", "how", "what", "who", "whom", "why", "you",
+    "your", "his", "her", "him", "them", "they", "she", "some", "many", "much", "such",
+    "first", "second", "same", "different", "also", "into", "onto", "upon", "per",
+    "while", "whereas", "often", "further", "show", "shows", "shown", "see", "use",
+    "uses", "given", "make", "makes", "made", "well", "less", "least", "like",
 }
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z\-]{2,}")
 _SECTION_GROUPS = {
@@ -53,24 +67,36 @@ def _clean_section_label(label: str) -> str | None:
 
 
 def section_length_stats(structure: dict | None, raw_text: str = "") -> list[dict]:
-    sections = (structure or {}).get("sections") or {}
-    stats = []
-    for name, text in sections.items():
-        label = _clean_section_label(name)
-        if label and text.strip():
-            stats.append({"label": label, "value": len(text.split())})
-    if len(stats) < 2 and raw_text:
-        from app.services.parser import detect_structure
+    """Words per top-level section, in reading order.
 
-        inferred = detect_structure(raw_text)
-        sections = inferred.get("sections") or {}
-        stats = []
-        for name, text in sections.items():
-            label = _clean_section_label(name)
-            if label and text.strip():
-                stats.append({"label": label, "value": len(text.split())})
-    # Biggest sections first — makes for a more readable bar chart.
-    return sorted(stats, key=lambda s: s["value"], reverse=True)
+    Uses the parser's heading rules on the text itself, so papers saved
+    before those rules improved are counted the same way as new ones.
+    Appendix sections (A, B, C after the references) are counted together.
+    """
+    detected = detect_structure(raw_text)["sections"] if raw_text else {}
+    from_text = len([name for name in detected if name != "preamble"]) >= 2
+    sections = detected if from_text else (structure or {}).get("sections") or {}
+    stats: list[dict] = []
+    for name, text in sections.items():
+        words = len(text.split())
+        if name == "preamble":
+            if from_text and words >= 30:
+                stats.append({"label": "Opening context", "value": words})
+            continue
+        if from_text and re.match(r"^[A-H]\.?\s+[A-Z]", name):
+            label = "Appendix"
+        else:
+            label = re.sub(r"^\s*(?:\d+(?:\.\d+)*|[IVX]+)[\s.)-]+(?=[A-Z])", "", name).strip(" .:")
+            label = _clean_section_label(re.sub(r"\s\(\d+\)$", "", label))
+        if not label or words == 0:
+            continue
+        if not from_text and (re.search(r"\d", label) or words < 30):
+            continue  # old parser output: skip table cells such as "VGG-16"
+        if stats and stats[-1]["label"] == label:
+            stats[-1]["value"] += words
+        else:
+            stats.append({"label": label, "value": words})
+    return stats
 
 
 def structure_score(section_lengths: list[dict]) -> int:
@@ -111,24 +137,62 @@ def deterministic_complexity_score(raw_text: str, section_lengths: list[dict]) -
     return max(1, min(10, score))
 
 
+def _singular(word: str) -> str:
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
+
+
 def keyword_frequency(raw_text: str, top_n: int = 15) -> list[dict]:
-    words = [w.lower() for w in _WORD_RE.findall(raw_text)]
-    words = [w for w in words if w not in _STOPWORDS]
-    counts = Counter(words).most_common(top_n)
-    return [{"label": word, "value": count} for word, count in counts]
+    """
+    Most-used topic words. Singular and plural count together ("layer" + "layers"),
+    trailing hyphens from names like "ResNet-50" are dropped, and each term is
+    shown in the spelling the paper uses most ("ImageNet", not "imagenet").
+    """
+    counts: Counter = Counter()
+    spellings: dict[str, Counter] = {}
+    # NFKC turns PDF ligatures back into letters ("ﬁne-tuning" -> "fine-tuning").
+    for match in _WORD_RE.findall(unicodedata.normalize("NFKC", raw_text)):
+        surface = match.strip("-")
+        word = surface.lower()
+        if len(word) < 3 or word in _STOPWORDS or "-" in word and len(word.replace("-", "")) < 3:
+            continue
+        key = _singular(word)
+        if key in _STOPWORDS:
+            continue
+        counts[key] += 1
+        spellings.setdefault(key, Counter())[surface] += 1
+
+    result = []
+    for key, count in counts.most_common(top_n):
+        forms = spellings[key]
+        # Prefer the most used form; break ties toward a capitalised proper name.
+        label = max(forms.items(), key=lambda item: (item[1], item[0] != item[0].lower()))[0]
+        if label.isupper() and len(label) > 4:
+            label = label.lower()  # headings in capitals, not acronyms
+        result.append({"label": label, "value": count})
+    return result
 
 
 async def classify_paper(raw_text: str) -> dict | None:
     """Returns None (rather than raising) on ANY failure here — network blips, OpenRouter errors, malformed JSON, whatever. Classification is a nice-to-have; the two computed charts (section lengths, keywords) must never be taken down by it."""
 
     system_prompt, user_prompt = build_classification_prompt(raw_text)
-    try:
-        raw_response = await call_openrouter(system_prompt, user_prompt, max_tokens=350, temperature=0.1)
-
-    except Exception:
-        return None
-
-    except LLMRequestError:
+    # Scored once per paper and saved, so use the best model (Gemini) whatever
+    # the AI menu says; fall back to the usual chain if Gemini can't answer.
+    raw_response = None
+    for provider in ("gemini", "auto"):
+        token = providers.chosen_provider.set(provider)
+        try:
+            raw_response = await call_openrouter(system_prompt, user_prompt, max_tokens=350, temperature=0.1)
+            break
+        except Exception:
+            continue
+        finally:
+            providers.chosen_provider.reset(token)
+    if raw_response is None:
         return None
 
     match = re.search(r"\{[^{}]*\}", raw_response, re.DOTALL)

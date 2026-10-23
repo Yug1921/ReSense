@@ -9,8 +9,9 @@ re-touches the raw file.
 import socket
 
 import httpx
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
+from app.auth import CurrentUser, current_user
 from app.config import settings
 from app.db.supabase_client import get_supabase, PAPERS_TABLE, FIGURES_TABLE
 from app.models.schemas import UploadResponse
@@ -29,7 +30,9 @@ _ALLOWED_EXTENSIONS = (".pdf", ".docx", ".doc")
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
+async def upload_paper(
+    file: UploadFile = File(...), user: CurrentUser = Depends(current_user)
+) -> UploadResponse:
     filename = file.filename or "uploaded_file"
 
     if not filename.lower().endswith(_ALLOWED_EXTENSIONS):
@@ -52,7 +55,12 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
     try:
         supabase = get_supabase()
         existing = (
-            supabase.table(PAPERS_TABLE).select("*").eq("file_hash", file_hash).limit(1).execute()
+            supabase.table(PAPERS_TABLE)
+            .select("*")
+            .eq("user_id", user.id)
+            .eq("file_hash", file_hash)
+            .limit(1)
+            .execute()
         )
     except (OSError, socket.gaierror, httpx.TransportError) as exc:
         raise HTTPException(
@@ -99,6 +107,7 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
                 {
                     "filename": filename,
                     "file_hash": file_hash,
+                    "user_id": user.id,
                     "status": "parse_failed",
                 }
             )
@@ -119,6 +128,7 @@ async def upload_paper(file: UploadFile = File(...)) -> UploadResponse:
             {
                 "filename": filename,
                 "file_hash": file_hash,
+                "user_id": user.id,
                 "raw_text": parsed.raw_text,
                 "structure_json": parsed.structure,
                 "status": parsed.status,

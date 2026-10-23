@@ -12,7 +12,7 @@ summarized yet, or /analyze hasn't been run yet, those fields just
 come back empty/None and the frontend calls the respective endpoint
 on demand.
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from app.db.supabase_client import (
     get_supabase,
@@ -29,14 +29,24 @@ from app.models.schemas import (
     ChatTurn,
 )
 
+from app.auth import CurrentUser, current_user
+from app.routers.analyze import ANALYSIS_VERSION
+
 router = APIRouter(tags=["session"])
 
 
 @router.get("/session/{paper_id}", response_model=SessionResponse)
-async def get_session(paper_id: str) -> SessionResponse:
+async def get_session(paper_id: str, user: CurrentUser = Depends(current_user)) -> SessionResponse:
     supabase = get_supabase()
 
-    paper_result = supabase.table(PAPERS_TABLE).select("*").eq("id", paper_id).limit(1).execute()
+    paper_result = (
+        supabase.table(PAPERS_TABLE)
+        .select("*")
+        .eq("id", paper_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
+    )
     if not paper_result.data:
         raise HTTPException(status_code=404, detail="No paper found for this paper_id.")
     paper = paper_result.data[0]
@@ -50,7 +60,9 @@ async def get_session(paper_id: str) -> SessionResponse:
         supabase.table(ANALYSIS_TABLE).select("*").eq("paper_id", paper_id).limit(1).execute()
     )
     analysis = None
-    if analysis_result.data:
+    # Only analyses computed by the current code are returned; older ones are
+    # recomputed by /analyze when the Overview opens.
+    if analysis_result.data and analysis_result.data[0]["chart_data_json"].get("version") == ANALYSIS_VERSION:
         data = analysis_result.data[0]["chart_data_json"]
         classification = data.get("classification")
         analysis = AnalyzeResponse(
@@ -59,6 +71,7 @@ async def get_session(paper_id: str) -> SessionResponse:
             keywords=data["keywords"],
             structure_score=data.get("structure_score", 0),
             classification=Classification(**classification) if classification else None,
+            reference_count=data.get("reference_count"),
             cached=True,
         )
 

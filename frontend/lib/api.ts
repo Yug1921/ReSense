@@ -1,3 +1,6 @@
+import { getAccessToken, getSupabase, isAuthConfigured } from "@/lib/supabase";
+import { getAiChoice } from "@/lib/ai-choice";
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -26,11 +29,11 @@ export interface ToneMeta {
 }
 
 export const TONES: ToneMeta[] = [
-  { id: "academic", label: "Academic", description: "Follows the paper's own structure and preserves its terminology." },
-  { id: "technical", label: "Technical", description: "Algorithms, architecture, dataset, parameters, evaluation metrics." },
-  { id: "research_insight", label: "Research Insight", description: "Problem, gap, novelty, contribution, significance." },
-  { id: "figure_table_analysis", label: "Figure & Table Analysis", description: "What each figure/table shows and what it supports." },
-  { id: "critical_review", label: "Critical Review", description: "What's demonstrated vs. merely claimed; limitations." },
+  { id: "academic", label: "Academic", description: "Follows the paper's own structure" },
+  { id: "technical", label: "Technical", description: "Methods, data, settings, metrics" },
+  { id: "research_insight", label: "Research Insight", description: "Problem, what is new, why it matters" },
+  { id: "figure_table_analysis", label: "Figures & Tables", description: "What each figure and table shows" },
+  { id: "critical_review", label: "Critical Review", description: "Shown vs. claimed, limitations" },
 ];
 
 export interface SummarizeResponse {
@@ -49,12 +52,37 @@ export class ApiError extends Error {
   }
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  const headers: Record<string, string> = { "X-AI-Provider": getAiChoice() };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+// The backend refused our sign-in (expired or revoked): sign out locally and
+// send the person to sign in again, returning to this page afterwards.
+function handleSignedOut() {
+  if (typeof window === "undefined" || window.location.pathname.startsWith("/sign-in")) return;
+  const next = `${window.location.pathname}${window.location.search}`;
+  // A full page load (not router.push) so no signed-in state survives in memory.
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  const redirect = () => window.location.assign(`/sign-in?next=${encodeURIComponent(next)}`);
+  if (isAuthConfigured()) getSupabase().auth.signOut().finally(redirect);
+  else redirect();
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: { ...(await authHeaders()), ...(init.headers as Record<string, string> | undefined) },
+    });
+  } catch {
+    throw new ApiError("We couldn't reach ReSense. Check your connection and try again.", 0);
+  }
+  if (res.status === 401) handleSignedOut();
+  if (res.status === 204) return undefined as T;
   let data: unknown;
   try {
     data = await res.json();
@@ -66,6 +94,18 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     throw new ApiError(detail, res.status);
   }
   return data as T;
+}
+
+function postJson<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function getJson<T>(path: string): Promise<T> {
+  return request<T>(path);
 }
 
 export interface ChartPoint {
@@ -85,7 +125,49 @@ export interface AnalyzeResponse {
   keywords: ChartPoint[];
   structure_score: number;
   classification: Classification | null;
+  reference_count?: number | null;
   cached: boolean;
+}
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface PaperInfo {
+  paper_id: string;
+  filename: string;
+  status: PaperStatus;
+  structure: { word_count?: number; section_order?: string[] } & Record<string, unknown>;
+}
+
+export interface SessionResponse {
+  paper: PaperInfo;
+  summaries: Partial<Record<Tone, string>>;
+  analysis: AnalyzeResponse | null;
+  chat_history: ChatTurn[];
+}
+
+// Read-only: restores everything already generated for a paper, never starts new work.
+export function getSession(paperId: string): Promise<SessionResponse> {
+  return getJson<SessionResponse>(`/session/${encodeURIComponent(paperId)}`);
+}
+
+export interface PaperListItem {
+  paper_id: string;
+  filename: string;
+  status: PaperStatus;
+  uploaded_at: string;
+  word_count: number | null;
+}
+
+// The signed-in person's papers, newest first.
+export function listPapers(): Promise<PaperListItem[]> {
+  return getJson<PaperListItem[]>("/papers");
+}
+
+export function deletePaper(paperId: string): Promise<void> {
+  return request<void>(`/papers/${encodeURIComponent(paperId)}`, { method: "DELETE" });
 }
 
 export interface AskResponse {
@@ -118,29 +200,46 @@ export function uploadPaper(
   const formData = new FormData();
   formData.append("file", file);
 
-  const promise = new Promise<UploadResponse>((resolve, reject) => {
-    xhr.open("POST", `${API_BASE_URL}/upload`);
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && onProgress) {
-        onProgress(Math.round((event.loaded / event.total) * 100));
-      }
-    };
-    xhr.onload = () => {
-      let body: unknown;
-      try { body = JSON.parse(xhr.responseText); } catch { body = null; }
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(body as UploadResponse);
-      } else {
-        const detail = (body as { detail?: string } | null)?.detail ?? "Upload failed.";
-        reject(new ApiError(detail, xhr.status));
-      }
-    };
-    xhr.onerror = () => reject(new ApiError("Network error — is the backend running?", 0));
-    xhr.onabort = () => reject(new ApiError("Upload cancelled.", 0));
-    xhr.send(formData);
-  });
+  let aborted = false;
 
-  return { promise, abort: () => xhr.abort() };
+  const promise = authHeaders().then(
+    (headers) =>
+      new Promise<UploadResponse>((resolve, reject) => {
+        if (aborted) {
+          reject(new ApiError("Upload cancelled.", 0));
+          return;
+        }
+        xhr.open("POST", `${API_BASE_URL}/upload`);
+        for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onProgress) {
+            onProgress(Math.round((event.loaded / event.total) * 100));
+          }
+        };
+        xhr.onload = () => {
+          let body: unknown;
+          try { body = JSON.parse(xhr.responseText); } catch { body = null; }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(body as UploadResponse);
+          } else {
+            if (xhr.status === 401) handleSignedOut();
+            const detail = (body as { detail?: string } | null)?.detail ?? "Upload failed.";
+            reject(new ApiError(detail, xhr.status));
+          }
+        };
+        xhr.onerror = () => reject(new ApiError("Network error — is the backend running?", 0));
+        xhr.onabort = () => reject(new ApiError("Upload cancelled.", 0));
+        xhr.send(formData);
+      })
+  );
+
+  return {
+    promise,
+    abort: () => {
+      aborted = true;
+      xhr.abort();
+    },
+  };
 }
 
 export type ReferenceStatus = "verified" | "uncertain" | "not_found" | "unavailable";
@@ -160,6 +259,10 @@ export interface ReferenceItem {
   publication_relation: PublicationRelation | null;
   match_reason: string | null;
   conflict_fields: string[];
+  // The citation as written in the paper, split for display (best effort).
+  cited_title: string | null;
+  cited_authors: string | null;
+  cited_venue: string | null;
 }
 
 export interface ReferenceCheckResponse {
@@ -171,8 +274,52 @@ export interface ReferenceCheckResponse {
   unavailable: number;
   items: ReferenceItem[];
   cached: boolean;
+  checked_at: string | null;
+}
+
+/** The last saved reference check, or null if this paper was never checked. */
+export async function getSavedReferenceCheck(paperId: string): Promise<ReferenceCheckResponse | null> {
+  const saved = await getJson<ReferenceCheckResponse | undefined>(
+    `/integrity/references/${encodeURIComponent(paperId)}`
+  );
+  return saved ?? null;
 }
 
 export function checkReferences(paperId: string, force = false): Promise<ReferenceCheckResponse> {
   return postJson<ReferenceCheckResponse>("/integrity/references", { paper_id: paperId, force });
+}
+
+export type DownloadFormat = "pdf" | "docx";
+
+/** Download a saved summary as a formatted PDF or Word file. */
+export async function downloadSummary(paperId: string, tone: Tone, format: DownloadFormat, paperName = "paper") {
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE_URL}/summarize/${encodeURIComponent(paperId)}/${tone}/download?format=${format}`,
+      { headers: await authHeaders() }
+    );
+  } catch {
+    throw new ApiError("We couldn't reach ReSense. Check your connection and try again.", 0);
+  }
+  if (res.status === 401) handleSignedOut();
+  if (!res.ok) {
+    let detail = "Couldn't make the file. Try again.";
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      // not JSON: keep the default message
+    }
+    throw new ApiError(detail, res.status);
+  }
+  const blob = await res.blob();
+  const base = paperName.replace(/\.(pdf|docx?)$/i, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "paper";
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${base}-${tone.replace(/_/g, "-")}.${format}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

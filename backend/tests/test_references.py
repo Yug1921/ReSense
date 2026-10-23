@@ -1389,3 +1389,31 @@ class RealPaperRegressionTests(unittest.IsolatedAsyncioTestCase):
             )],
         )
         self.assertNotEqual(result["status"], "unavailable")
+
+
+class SpringerStyleTests(unittest.TestCase):
+    def test_numbered_list_with_footnotes_and_year_lines_splits_in_sequence(self):
+        text = (
+            "1. Bollacker, K.D., Lawrence, S.: CiteSeer: an autonomous web agent. In:\n"
+            "Proceedings of Autonomous agents, pp. 116–123 (1998)\n"
+            "2. Airoldi, E.M., Blei, D.M.: Mixed membership stochastic block models.\n"
+            "J. Mach. Learn. Res. 9, 1981–2014 (2008)\n"
+            "33 http://www.mymedialite.net/ .\n"
+            "335\n"
+            "3. Lee, M.D.: Graph model. In: Data mining,\n"
+            "2003. Proceedings. IEEE conference, pp. 203–210 (2002)\n"
+        )
+        refs = extract_references({"sections": {"References": text}}, text)
+        self.assertEqual(len(refs), 3)
+        self.assertTrue(refs[2].startswith("3. Lee") and refs[2].endswith("(2002)"))
+        self.assertNotIn("mymedialite", refs[1])
+
+    def test_colon_style_title_year_and_author(self):
+        meta = _reference_metadata(
+            "5. Beel, J., Langer, S., Genzmehr, M.: Sponsored vs. Organic (Research Paper) "
+            "Recommendations and the Impact of Labeling. In: Proceedings of TPDL 2013, "
+            "pp. 395–399 (2013)"
+        )
+        self.assertEqual(meta.title, "Sponsored vs. Organic (Research Paper) Recommendations and the Impact of Labeling")
+        self.assertEqual(meta.first_author, "beel")
+        self.assertEqual(meta.year, 2013)

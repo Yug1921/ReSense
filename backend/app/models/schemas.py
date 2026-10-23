@@ -81,6 +81,7 @@ class AnalyzeResponse(BaseModel):
     keywords: list[ChartPoint]
     structure_score: int = Field(ge=0, le=100)
     classification: Optional[Classification] = None
+    reference_count: Optional[int] = None
     cached: bool = Field(
         description="True if served from the analysis cache, False if just computed."
     )
@@ -92,6 +93,14 @@ class PaperInfo(BaseModel):
     filename: str
     status: PaperStatus
     structure: dict
+
+
+class PaperListItem(BaseModel):
+    paper_id: str
+    filename: str
+    status: PaperStatus
+    uploaded_at: str
+    word_count: int | None = None
 
 
 class SessionResponse(BaseModel):
@@ -148,6 +157,10 @@ class ReferenceItem(BaseModel):
     ] = None
     match_reason: Optional[str] = None
     conflict_fields: list[str] = Field(default_factory=list)
+    # The citation as written in the paper, split for display (best effort).
+    cited_title: Optional[str] = None
+    cited_authors: Optional[str] = None
+    cited_venue: Optional[str] = None
 
 
 class ReferenceCheckRequest(BaseModel):
@@ -164,3 +177,4 @@ class ReferenceCheckResponse(BaseModel):
     unavailable: int = 0
     items: list[ReferenceItem]
     cached: bool
+    checked_at: Optional[str] = None
