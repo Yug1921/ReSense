@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ApiError, getSession, type SessionResponse } from "@/lib/api";
@@ -44,7 +44,6 @@ type LoadState =
   | { status: "error"; message: string };
 
 export function PaperWorkspace({ paperId }: { paperId: string }) {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get("tab");
@@ -96,12 +95,20 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
     };
   }, [paperId, attempt]);
 
+  // Which way the new panel slides in: from the right when moving to a later tab.
+  const [direction, setDirection] = useState<1 | -1>(1);
+
   function selectTab(id: TabId) {
+    if (id === activeTab) return;
+    const order = (tab: TabId) => TABS.findIndex((t) => t.id === tab);
+    setDirection(order(id) > order(activeTab) ? 1 : -1);
     const params = new URLSearchParams(searchParams.toString());
     if (id === "overview") params.delete("tab");
     else params.set("tab", id);
     const query = params.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    // Update the address without a navigation, so the switch is instant
+    // (Next.js keeps useSearchParams in sync with history.replaceState).
+    window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname);
   }
 
   function handleTabKeys(event: KeyboardEvent<HTMLDivElement>) {
@@ -167,7 +174,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
             {paper ? (
               <>
                 <h1 className="truncate text-[15px] font-medium leading-tight">{paper.filename}</h1>
-                {reading && <p className="text-xs text-subtle-foreground">{reading}</p>}
+                {reading && <p className="truncate text-xs text-subtle-foreground">{reading}</p>}
               </>
             ) : (
               <div className="flex flex-col gap-1.5">
@@ -215,12 +222,12 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
           <span
             ref={indicatorRef}
             aria-hidden
-            className="pointer-events-none absolute bottom-0 left-0 h-0.5 w-0 rounded-full bg-iris data-[ready]:transition-[transform,width] data-[ready]:duration-300 data-[ready]:ease-[cubic-bezier(0.2,0.8,0.2,1)]"
+            className="pointer-events-none absolute bottom-0 left-0 h-0.5 w-0 rounded-full bg-iris data-[ready]:transition-[transform,width] data-[ready]:duration-[380ms] data-[ready]:ease-[cubic-bezier(0.4,0,0.2,1)]"
           />
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-10">
+      <main className="mx-auto max-w-6xl overflow-x-clip px-4 py-8 sm:px-10">
         {session ? (
           // Every tab stays mounted (just hidden) so switching back keeps its state.
           TABS.map((tab) => (
@@ -230,7 +237,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
               id={`panel-${tab.id}`}
               aria-labelledby={`tab-${tab.id}`}
               hidden={tab.id !== activeTab}
-              className="animate-panel-in"
+              className={direction === 1 ? "animate-panel-in-right" : "animate-panel-in-left"}
             >
               {tab.id === "overview" && (
                 <OverviewPanel
@@ -243,7 +250,7 @@ export function PaperWorkspace({ paperId }: { paperId: string }) {
                   }}
                 />
               )}
-              {tab.id === "summary" && <SummaryPanel paperId={paperId} initialSummaries={session.summaries} />}
+              {tab.id === "summary" && <SummaryPanel paperId={paperId} initialSummaries={session.summaries} paperName={paper?.filename} />}
               {tab.id === "ask" && (
                 <AskPanel paperId={paperId} initialHistory={session.chat_history} />
               )}

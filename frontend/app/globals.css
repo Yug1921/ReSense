@@ -162,7 +162,8 @@
   --animate-scan: scan 1.6s ease-in-out infinite;
   /* Menus and panels appearing */
   --animate-pop-in: pop-in 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
-  --animate-panel-in: panel-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-panel-in-right: panel-in-right 0.36s cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-panel-in-left: panel-in-left 0.36s cubic-bezier(0.2, 0.8, 0.2, 1);
 
   @keyframes pop-in {
     from {
@@ -174,10 +175,20 @@
       transform: none;
     }
   }
-  @keyframes panel-in {
+  @keyframes panel-in-right {
     from {
       opacity: 0;
-      transform: translateY(6px);
+      transform: translateX(18px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes panel-in-left {
+    from {
+      opacity: 0;
+      transform: translateX(-18px);
     }
     to {
       opacity: 1;

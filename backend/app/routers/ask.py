@@ -28,6 +28,15 @@ _TOP_K_CHUNKS = 10  # about 1,800 words: room for a broad answer, still fits Gro
 _MAX_HISTORY_TURNS = 6  # keeps the context window bounded to recent turns
 
 
+def _figure_label(figure: dict) -> str:
+    """'Table 3' from the caption when known, else 'Figure on page 4'."""
+    named = re.match(r"\s*((?:fig(?:ure)?\.?|table)\s*\d+)", figure.get("caption") or "", re.IGNORECASE)
+    if named:
+        return re.sub(r"^fig\.?\s*", "Figure ", named.group(1), flags=re.IGNORECASE).strip().capitalize()
+    kind = (figure.get("image_type") or "figure").capitalize()
+    return f"{kind} on page {figure['page_number']}" if figure.get("page_number") else kind
+
+
 def _local_fallback_answer(question: str, relevant_chunks: list[dict]) -> str:
     """Return grounded excerpts when all remote providers are temporarily busy."""
     question_terms = {
@@ -99,7 +108,7 @@ async def ask_paper(req: AskRequest, user: CurrentUser = Depends(current_user)) 
     figures = await ensure_figures_captioned(supabase, FIGURES_TABLE, req.paper_id)
     tables = (paper.get("structure_json") or {}).get("tables", [])
     extra_chunks = [
-        {"section": f"{(f.get('image_type') or 'figure').capitalize()} on page {f['page_number']}", "text": f["caption"]}
+        {"section": _figure_label(f), "text": f["caption"]}
         for f in figures
     ] + [
         {"section": f"Table on page {t['page_number']}", "text": t["content"]}

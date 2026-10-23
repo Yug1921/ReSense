@@ -288,3 +288,38 @@ export async function getSavedReferenceCheck(paperId: string): Promise<Reference
 export function checkReferences(paperId: string, force = false): Promise<ReferenceCheckResponse> {
   return postJson<ReferenceCheckResponse>("/integrity/references", { paper_id: paperId, force });
 }
+
+export type DownloadFormat = "pdf" | "docx";
+
+/** Download a saved summary as a formatted PDF or Word file. */
+export async function downloadSummary(paperId: string, tone: Tone, format: DownloadFormat, paperName = "paper") {
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE_URL}/summarize/${encodeURIComponent(paperId)}/${tone}/download?format=${format}`,
+      { headers: await authHeaders() }
+    );
+  } catch {
+    throw new ApiError("We couldn't reach ReSense. Check your connection and try again.", 0);
+  }
+  if (res.status === 401) handleSignedOut();
+  if (!res.ok) {
+    let detail = "Couldn't make the file. Try again.";
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      // not JSON: keep the default message
+    }
+    throw new ApiError(detail, res.status);
+  }
+  const blob = await res.blob();
+  const base = paperName.replace(/\.(pdf|docx?)$/i, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "paper";
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${base}-${tone.replace(/_/g, "-")}.${format}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

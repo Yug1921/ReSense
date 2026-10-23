@@ -76,7 +76,7 @@ export function AiPicker() {
         )}
       >
         <Sparkles className="size-3.5 text-iris" aria-hidden />
-        <span>{current.label}</span>
+        <span className="hidden sm:inline">{current.label}</span>
         <ChevronDown
           className={cn("size-3.5 transition-transform duration-200", open && "rotate-180")}
           aria-hidden

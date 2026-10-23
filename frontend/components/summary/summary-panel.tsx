@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, Copy, RotateCw } from "lucide-react";
+import { Check, Copy, FileDown, FileText, Loader2, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ApiError, summarizePaper, TONES, type Tone } from "@/lib/api";
+import { ApiError, downloadSummary, summarizePaper, TONES, type DownloadFormat, type Tone } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -26,14 +26,16 @@ function errorMessage(err: unknown) {
 export interface SummaryPanelProps {
   paperId: string;
   initialSummaries?: Partial<Record<Tone, string>>;
+  paperName?: string;
 }
 
-export function SummaryPanel({ paperId, initialSummaries }: SummaryPanelProps) {
+export function SummaryPanel({ paperId, initialSummaries, paperName }: SummaryPanelProps) {
   const [tone, setTone] = useState<Tone>(RECOMMENDED);
   const [summaries, setSummaries] = useState<Partial<Record<Tone, string>>>(initialSummaries ?? {});
   const [writing, setWriting] = useState<Tone | null>(null);
   const [errors, setErrors] = useState<Partial<Record<Tone, string>>>({});
   const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState<DownloadFormat | null>(null);
   const cardRefs = useRef<Partial<Record<Tone, HTMLButtonElement | null>>>({});
 
   const content = summaries[tone];
@@ -76,6 +78,18 @@ export function SummaryPanel({ paperId, initialSummaries }: SummaryPanelProps) {
       setTimeout(() => setCopied(false), 2000);
     } catch {
       toast.error("Couldn't copy. Select the text and copy it instead.");
+    }
+  }
+
+  async function download(format: DownloadFormat) {
+    if (downloading) return;
+    setDownloading(format);
+    try {
+      await downloadSummary(paperId, tone, format, paperName);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't download the file. Try again.");
+    } finally {
+      setDownloading(null);
     }
   }
 
@@ -154,13 +168,27 @@ export function SummaryPanel({ paperId, initialSummaries }: SummaryPanelProps) {
         <Card className="min-w-0 flex-1 px-5 py-7 sm:px-12 sm:py-9">
           {content && !isWriting ? (
             <>
+              <div className="mb-7 flex flex-wrap items-center justify-between gap-3 border-b border-divider pb-4">
+                <p className="eyebrow">{meta.label} summary</p>
+                <span className="flex gap-1.5">
+                  <span className="sr-only">Download</span>
+                  <Button size="sm" onClick={() => download("pdf")} disabled={Boolean(downloading)} aria-label="Download as PDF">
+                    {downloading === "pdf" ? <Loader2 className="animate-spin" aria-hidden /> : <FileDown aria-hidden />}
+                    PDF
+                  </Button>
+                  <Button size="sm" onClick={() => download("docx")} disabled={Boolean(downloading)} aria-label="Download as Word">
+                    {downloading === "docx" ? <Loader2 className="animate-spin" aria-hidden /> : <FileText aria-hidden />}
+                    Word
+                  </Button>
+                </span>
+              </div>
               <RichText blocks={blocks} className="max-w-[40rem]" />
               <div className="mt-8 flex flex-col gap-3 border-t border-divider pt-4 sm:flex-row sm:items-center sm:justify-between">
                 <span className="flex items-center gap-2 text-xs text-subtle-foreground">
                   <Badge>AI-generated</Badge>
                   Written from this paper&apos;s text. Check key numbers against the paper.
                 </span>
-                <span className="flex gap-1.5">
+                <span className="flex flex-wrap gap-1.5">
                   <Button size="sm" onClick={copy}>
                     {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
                     {copied ? "Copied" : "Copy"}
