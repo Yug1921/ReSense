@@ -55,8 +55,57 @@ _COMPLEXITY_TERMS = {
 }
 
 
-def _clean_section_label(label: str) -> str | None:
+def _vocabulary(raw_text: str) -> Counter:
+    return Counter(w.lower() for w in re.findall(r"[A-Za-z]+", raw_text))
+
+
+def _rejoin_split_words(label: str, vocabulary: Counter) -> str:
+    """Rejoin words a PDF split apart ("S ummar y" -> "Summary").
+
+    Papers read before the parser joined kerned spans properly keep headings
+    such as "Related research fi e ld s" in their saved text. A run of
+    fragments is joined when its pieces aren't words on their own (letters,
+    or text the paper doesn't use) and it forms a word the paper uses or
+    holds a lowercase non-word such as "ummar". Real words ("and outlook")
+    and acronyms ("k NN", "BERT vs GPT") stay apart.
+    """
+    tokens = label.split()
+
+    def used(token: str) -> bool:
+        # Once is not enough: a table of contents repeats the split heading.
+        return vocabulary[token.lower()] >= 2
+
+    def fragment(token: str, first: bool) -> bool:
+        # Pieces after the first continue a word, so they start in lowercase.
+        if not first and not token[0].islower():
+            return False
+        return len(token) <= 2 or not used(token)
+
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        joined_at = None
+        for j in range(min(len(tokens), i + 6), i + 1, -1):
+            run = tokens[i:j]
+            word = "".join(run)
+            if not word.isalpha() or not all(fragment(t, k == 0) for k, t in enumerate(run)):
+                continue
+            if used(word) or any(t.islower() and len(t) >= 3 and not used(t) for t in run):
+                joined_at = j
+                break
+        if joined_at:
+            out.append("".join(tokens[i:joined_at]))
+            i = joined_at
+        else:
+            out.append(tokens[i])
+            i += 1
+    return " ".join(out)
+
+
+def _clean_section_label(label: str, vocabulary: Counter | None = None) -> str | None:
     cleaned = re.sub(r"\s+", " ", label).strip(" .:-")
+    if vocabulary:
+        cleaned = _rejoin_split_words(cleaned, vocabulary)
     if not cleaned or re.fullmatch(r"[ivxlcdm]+", cleaned, re.IGNORECASE):
         return None
     if len(re.findall(r"[A-Za-z]", cleaned)) < 3:
@@ -76,6 +125,8 @@ def section_length_stats(structure: dict | None, raw_text: str = "") -> list[dic
     detected = detect_structure(raw_text)["sections"] if raw_text else {}
     from_text = len([name for name in detected if name != "preamble"]) >= 2
     sections = detected if from_text else (structure or {}).get("sections") or {}
+    # Words of the body text only, so a split heading doesn't vouch for itself.
+    vocabulary = _vocabulary(" ".join(sections.values()))
     stats: list[dict] = []
     for name, text in sections.items():
         words = len(text.split())
@@ -87,7 +138,7 @@ def section_length_stats(structure: dict | None, raw_text: str = "") -> list[dic
             label = "Appendix"
         else:
             label = re.sub(r"^\s*(?:\d+(?:\.\d+)*|[IVX]+)[\s.)-]+(?=[A-Z])", "", name).strip(" .:")
-            label = _clean_section_label(re.sub(r"\s\(\d+\)$", "", label))
+            label = _clean_section_label(re.sub(r"\s\(\d+\)$", "", label), vocabulary)
         if not label or words == 0:
             continue
         if not from_text and (re.search(r"\d", label) or words < 30):

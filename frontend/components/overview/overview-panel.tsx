@@ -108,7 +108,8 @@ export function OverviewPanel({ paperId, wordCount, initialAnalysis, onOpenTab }
     (best, s) => (!best || s.value > best.value ? s : best),
     null
   );
-  const maxWords = Math.max(1, ...data.section_lengths.map((s) => s.value));
+  // Bars compare the paper's own sections; the long reference list would dwarf them.
+  const maxWords = Math.max(1, ...(bodySections.length ? bodySections : data.section_lengths).map((s) => s.value));
   const terms = data.keywords.slice(0, 12);
 
   return (
@@ -183,20 +184,29 @@ export function OverviewPanel({ paperId, wordCount, initialAnalysis, onOpenTab }
             <ul className="mt-5 flex flex-col gap-3">
               {data.section_lengths.map((section) => {
                 const back = BACK_MATTER.has(section.label);
+                const references = section.label === "References" && data.reference_count;
                 return (
-                  <li key={section.label} className="grid grid-cols-[minmax(0,9rem)_1fr_3.5rem] items-center gap-3 sm:grid-cols-[minmax(0,11rem)_1fr_4rem]">
-                    <span className={cn("truncate text-[13px]", back ? "text-muted-foreground" : "text-foreground")} title={section.label}>
+                  <li key={section.label} className="grid grid-cols-[minmax(0,9rem)_1fr_3.5rem] items-center gap-3 sm:grid-cols-[minmax(0,13rem)_1fr_4rem]">
+                    <span className={cn("line-clamp-2 text-[13px] leading-snug", back ? "text-muted-foreground" : "text-foreground")} title={section.label}>
                       {section.label}
                     </span>
-                    <span className="h-2 overflow-hidden rounded-full bg-raised" aria-hidden>
-                      <span
-                        className={cn("block h-full rounded-full", back ? "bg-slate/60" : "bg-iris")}
-                        style={{ width: `${Math.max(2, (section.value / maxWords) * 100)}%` }}
-                      />
-                    </span>
-                    <span className="figures text-right text-[13px] text-muted-foreground">
-                      {section.value.toLocaleString("en-US")}
-                    </span>
+                    {references ? (
+                      <span className="col-span-2 text-right text-[13px] text-muted-foreground">
+                        <span className="figures">{data.reference_count?.toLocaleString("en-US")}</span> references
+                      </span>
+                    ) : (
+                      <>
+                        <span className="h-2 overflow-hidden rounded-full bg-raised" aria-hidden>
+                          <span
+                            className={cn("block h-full rounded-full", back ? "bg-slate/60" : "bg-iris")}
+                            style={{ width: `${Math.min(100, Math.max(2, (section.value / maxWords) * 100))}%` }}
+                          />
+                        </span>
+                        <span className="figures text-right text-[13px] text-muted-foreground">
+                          {section.value.toLocaleString("en-US")}
+                        </span>
+                      </>
+                    )}
                   </li>
                 );
               })}
@@ -204,7 +214,7 @@ export function OverviewPanel({ paperId, wordCount, initialAnalysis, onOpenTab }
           ) : (
             <p className="mt-5 text-sm text-muted-foreground">We couldn&apos;t find clear section headings in this paper.</p>
           )}
-          <p className="mt-5 text-xs text-subtle-foreground">Words per section. References and appendix are shown in grey.</p>
+          <p className="mt-5 text-xs text-subtle-foreground">Words per section. The reference list shows how many entries it has; the appendix is in grey.</p>
         </Card>
 
         <Card className="p-6">

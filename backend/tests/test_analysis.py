@@ -74,6 +74,20 @@ class SectionFallbackTests(unittest.TestCase):
         self.assertEqual([s["label"] for s in stats], ["Introduction", "Method"])
 
 
+def test_section_labels_rejoin_words_split_by_older_pdf_reading():
+    # Papers saved before kerned spans were joined keep "S ummar y" in their text.
+    body = "Research fields matter. A summary of the fields follows, and the summary ends here. " * 20
+    raw_text = "\n".join([
+        "1 Introduction", body,
+        "2 Related research fi e ld s", body,
+        "3 S ummar y and outlook", body,
+        "References", "[1] A. Author. A paper. 2020.",
+    ])
+    labels = [s["label"] for s in section_length_stats(None, raw_text)]
+    assert "Related research fields" in labels
+    assert "Summary and outlook" in labels
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -99,3 +113,4 @@ class ClassificationProviderTests(unittest.IsolatedAsyncioTestCase):
             providers.chosen_provider.reset(token)
         self.assertEqual(seen, ["gemini", "auto"])
         self.assertEqual(result["complexity_score"], 7)
+
