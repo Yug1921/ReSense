@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import upload, summarize, ask, analyze, session, figures, integrity
+from app.services.providers import PROVIDERS, chosen_provider
+from app.routers import upload, summarize, ask, analyze, session, figures, integrity, papers
 
 app = FastAPI(title="Re-sense API", version="0.1.0")
 
@@ -35,6 +36,17 @@ async def catch_unhandled_exceptions(request: Request, call_next):
             content={"detail": f"Unexpected server error: {exc}"},
         )
 
+@app.middleware("http")
+async def remember_ai_choice(request: Request, call_next):
+    """The AI picked in the app's menu (X-AI-Provider header) applies to this request only."""
+    choice = request.headers.get("x-ai-provider", "auto").lower()
+    token = chosen_provider.set(choice if choice in PROVIDERS else "auto")
+    try:
+        return await call_next(request)
+    finally:
+        chosen_provider.reset(token)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins_list,
@@ -50,6 +62,7 @@ app.include_router(analyze.router)
 app.include_router(session.router)
 app.include_router(figures.router)
 app.include_router(integrity.router)
+app.include_router(papers.router)
 
 
 @app.get("/health", tags=["health"])

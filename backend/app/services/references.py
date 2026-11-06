@@ -222,6 +222,36 @@ def _split_references(text: str, marker_pattern: re.Pattern[str]) -> list[str]:
     return entries
 
 
+# Footnotes that land inside the bibliography after PDF extraction:
+# "33 http://www.mymedialite.net/ ." and bare page numbers.
+_FOOTNOTE_URL_LINE_RE = re.compile(r"(?m)^\s*\d{1,3}\s+(?:https?://|www\.)\S*.*$\n?")
+_PAGE_NUMBER_LINE_RE = re.compile(r"(?m)^\s*\d{1,4}\s*$\n?")
+
+
+def _split_sequential_references(text: str) -> list[str]:
+    """Split "1. Author ..." lists, keeping only markers that continue the count.
+
+    A year or page number that happens to start a line ("2003. Proceedings")
+    is not taken as a new entry because it doesn't follow the previous number.
+    """
+    text = _PAGE_NUMBER_LINE_RE.sub("", _FOOTNOTE_URL_LINE_RE.sub("", text))
+    starts: list[int] = []
+    expected = 1
+    for match in _NUMBERED_REFERENCE_RE.finditer(text):
+        number = int(match.group(1))
+        if number == expected or (not starts and number <= 3):
+            starts.append(match.start())
+            expected = number + 1
+    entries = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(text)
+        normalized = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "", text[start:end])
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if len(normalized) >= 25:
+            entries.append(normalized)
+    return entries
+
+
 def _split_author_year_references(text: str) -> list[str]:
     """Split author-year bibliographies at their year markers.
 
@@ -270,8 +300,12 @@ def _split_author_year_references(text: str) -> list[str]:
     return entries
 
 
+# Long surveys cite hundreds of works; checking takes about a second each.
+MAX_REFERENCES = 400
+
+
 def extract_references(structure_json: dict, raw_text: str) -> list[str]:
-    """Extract up to 60 substantial references from a parsed paper."""
+    """Extract up to MAX_REFERENCES substantial references from a parsed paper."""
     sections = structure_json.get("sections") or {}
     reference_text = ""
     if isinstance(sections, dict):
@@ -302,9 +336,11 @@ def extract_references(structure_json: dict, raw_text: str) -> list[str]:
 
     references = _split_references(reference_text, _REFERENCE_MARKER_RE)
     if not references:
-        references = _split_author_year_references(reference_text)
-    if not references:
-        references = _split_references(reference_text, _NUMBERED_REFERENCE_RE)
+        # Numbered ("1. Author ...") and author-year lists can both seem to
+        # match; trust whichever finds more entries.
+        author_year = _split_author_year_references(reference_text)
+        numbered = _split_sequential_references(reference_text)
+        references = numbered if len(numbered) >= max(3, len(author_year)) else author_year
     if not references:
         references = _split_references(reference_text, _PLAIN_NUMBERED_REFERENCE_RE)
     if not references:
@@ -313,12 +349,40 @@ def extract_references(structure_json: dict, raw_text: str) -> list[str]:
             for entry in re.split(r"\n\s*\n+", reference_text)
             if len(re.sub(r"\s+", " ", entry).strip()) >= 25
         ]
-    return [_clean_reference_text(reference) for reference in references[:60]]
+    return [_clean_reference_text(reference) for reference in references[:MAX_REFERENCES]]
+
+
+# Springer/LNCS style: "Beel, J., Langer, S.: Title. In: Venue, pp. 1–9 (2013)".
+# Authors end in an initial followed by a colon; the year sits in brackets.
+_COLON_AUTHORS_RE = re.compile(r"^(?P<authors>[^:]{2,600}?[A-Z]\.(?:,?\s*et\s+al\.?)?)\s*:\s+(?P<rest>\S.*)$")
+_COLON_TITLE_END_RE = re.compile(r"\.\s+In:?\s|[.?!]\s+(?=[A-Z0-9])|,\s*\(?(?:19|20)\d{2}\b|\s\((?:19|20)\d{2}\)")
+_BRACKETED_YEAR_RE = re.compile(r"\(((?:19|20)\d{2})[a-z]?\)")
+
+
+def _colon_style(cleaned: str) -> tuple[str, str, str] | None:
+    """Authors, title and the rest of a "Surname, I.: Title. In: ..." citation."""
+    match = _COLON_AUTHORS_RE.match(cleaned)
+    if not match:
+        return None
+    rest = match.group("rest")
+    end = re.search(r"\.\s+In:?\s", rest) or _COLON_TITLE_END_RE.search(rest)
+    title = rest[: end.start()] if end else rest
+    if end and end.group(0)[0] in "?!":
+        title += end.group(0)[0]
+    title = re.sub(r"\s+", " ", title).strip(" .,:;\"“”")
+    if len(title) < 4:
+        return None
+    venue = rest[end.end():] if end else ""
+    venue = re.sub(r"^In:?\s*", "", venue.strip(" .,:;"))
+    return match.group("authors"), title, venue
 
 
 def extract_reference_title(ref_text: str) -> str:
     """Extract the likely article title while retaining a full-text fallback."""
     cleaned = re.sub(r"^\s*(?:\[\d+\]|\d+[.)])\s*", "", ref_text).strip()
+    colon = _colon_style(cleaned)
+    if colon:
+        return colon[1]
     year_match = _YEAR_RE.search(cleaned)
     if not year_match:
         return cleaned
@@ -437,7 +501,13 @@ def _reference_metadata(ref_text: str) -> ReferenceMetadata:
     year_match = _YEAR_RE.search(cleaned)
     year = int(year_match.group(0)) if year_match else None
     prefix = cleaned[:year_match.start()] if year_match else ""
-    if year_match and not cleaned[year_match.end():].strip(" .,:;-"):
+    colon = _colon_style(cleaned)
+    if colon:
+        prefix = colon[0]
+        bracketed = _BRACKETED_YEAR_RE.findall(cleaned)
+        if bracketed:
+            year = int(bracketed[-1])
+    elif year_match and not cleaned[year_match.end():].strip(" .,:;-"):
         split = _authors_then_title(cleaned)
         if split:
             prefix = split[0]
@@ -487,7 +557,9 @@ def _reference_metadata(ref_text: str) -> ReferenceMetadata:
     )
     venue = None
     boundary = re.search(r"\.\s+(?=[A-Z])", tail)
-    if boundary:
+    if colon:
+        venue = re.sub(r",?\s*(?:vol\.|pp\.|\((?:19|20)\d{2}\)|\d+\s*\().*$", "", colon[2]).strip(" .,:;") or None
+    elif boundary:
         venue = tail[boundary.end():].strip(" .,:;")
     publisher = venue if document_type == "book" else None
     if publisher:

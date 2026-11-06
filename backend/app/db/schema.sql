@@ -3,8 +3,9 @@
 
 create table if not exists papers (
     id              uuid primary key default gen_random_uuid(),
+    user_id         uuid references auth.users(id) on delete cascade,  -- owner (Supabase Auth)
     filename        text not null,
-    file_hash       text not null unique,        -- sha256 of the raw file, used for dedup
+    file_hash       text not null,               -- sha256 of the raw file, used for dedup per owner
     uploaded_at     timestamptz not null default now(),
     raw_text        text,                        -- extracted plain text (null until parsed)
     structure_json  jsonb,                        -- detected sections/headings/captions
@@ -37,6 +38,8 @@ create table if not exists chat_messages (
     created_at      timestamptz not null default now()
 );
 
+create unique index if not exists papers_user_file_hash_key on papers(user_id, file_hash);
+create index if not exists idx_papers_user_uploaded on papers(user_id, uploaded_at desc);
 create index if not exists idx_summaries_paper_id on summaries(paper_id);
 create index if not exists idx_analysis_paper_id on analysis(paper_id);
 create index if not exists idx_chat_messages_paper_id on chat_messages(paper_id);

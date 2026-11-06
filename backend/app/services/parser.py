@@ -2,6 +2,7 @@ import hashlib
 import io
 import importlib
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 import pdfplumber
@@ -215,6 +216,32 @@ def _merge_line_fragments(
     return merged
 
 
+def _join_spans(spans: list[dict]) -> str:
+    """Join a line's spans, adding a space only where the PDF leaves a gap.
+
+    Kerned headings arrive as many small spans ("S" "ummar" "y"); joining
+    every span with a space would print "S ummar y".
+    """
+    text = ""
+    previous_end = None
+    for span in spans:
+        piece = str(span.get("text", ""))
+        if not piece.strip():
+            if text and not text.endswith(" "):
+                text += " "
+            previous_end = None
+            continue
+        bbox = span.get("bbox")
+        size = float(span.get("size") or 10)
+        if text and not text.endswith(" ") and not piece.startswith(" "):
+            gap = (bbox[0] - previous_end) if bbox and previous_end is not None else size
+            if gap > size * 0.15:
+                text += " "
+        text += piece
+        previous_end = bbox[2] if bbox else None
+    return text.strip()
+
+
 def _extract_coordinate_lines(page: object) -> list[tuple[float, float, float, float, str]]:
     """Return non-empty PDF text lines as (x0, y0, x1, y1, text)."""
     try:
@@ -222,8 +249,7 @@ def _extract_coordinate_lines(page: object) -> list[tuple[float, float, float, f
         lines = []
         for block in blocks:
             for line in block.get("lines", []):
-                spans = line.get("spans", [])
-                text = " ".join(str(span.get("text", "")).strip() for span in spans).strip()
+                text = _join_spans(line.get("spans", []))
                 text = re.sub(r"\s+", " ", text)
                 if text:
                     x0, y0, x1, y1 = line["bbox"]
@@ -333,33 +359,102 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
         raise FileParsingError(f"Could not read DOCX: {exc}") from exc
 
 
-def detect_structure(raw_text: str) -> dict:
-    lines = raw_text.splitlines()
-    sections: dict[str, list[str]] = {}
-    current_section = "preamble"
-    sections[current_section] = []
+_NUMBERED_HEADING_RE = re.compile(
+    r"^(?P<num>\d{1,2}(?:\.\d{1,2}){0,2}|[IVX]{1,5}|[A-H])\.?\s+(?P<title>[A-Z][^\n]{1,80})$"
+)
+_ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8,
+          "IX": 9, "X": 10, "XI": 11, "XII": 12, "XIII": 13, "XIV": 14, "XV": 15}
+# Words a heading can't end on; such a line is the start of a sentence or footnote.
+_DANGLING_END_RE = re.compile(r"(?:,|\b(?:a|an|the|of|in|on|and|or|to|for|with|by|but|also|may|is|are|was|were|be))$", re.IGNORECASE)
 
-    for line in lines:
+
+def _plain_heading(stripped: str) -> str:
+    return re.sub(r"^\s*(?:\d+(?:\.\d+)*|[IVX]+|[A-H])[\s.)-]+", "", stripped, flags=re.IGNORECASE).strip(" .:").lower()
+
+
+def _heading_title_ok(title: str) -> bool:
+    words = title.split()
+    return (
+        1 <= len(words) <= 12
+        and not _DANGLING_END_RE.search(title)
+        and not title.rstrip().endswith((".", "-"))
+        and sum(ch.isalpha() for ch in title) >= 3
+    )
+
+
+def detect_structure(raw_text: str) -> dict:
+    """Split the paper into its top-level sections, in reading order.
+
+    A line counts as a heading only when it reads like one: a well-known
+    section name ("Abstract", "References"), or a numbered heading whose
+    number continues the paper's own sequence (1, 2, 3 or I, II, III, and
+    appendix letters A, B, C after the references). Short capitalised lines
+    such as table cells ("MRR", "E 150") and numbered footnotes
+    ("16 Recommendation frameworks such as ...") are body text.
+    Subsection headings (4.1, 4.2) stay inside their section but are listed
+    in "outline" so questions about the paper's structure can be answered.
+    """
+    sections: dict[str, list[str]] = {"preamble": []}
+    outline: list[str] = []
+    current = "preamble"
+    last_top = 0
+    last_letter = ""
+    sub_seen: set[str] = set()
+    dotted: bool | None = None  # "1. Intro" vs "1 Intro": a paper sticks to one
+    in_references = False
+
+    def start(name: str) -> None:
+        nonlocal current
+        name = name if name not in sections else f"{name} ({len(sections)})"
+        current = name
+        sections[name] = []
+        outline.append(name)
+
+    for line in raw_text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        match = _HEADING_RE.match(stripped)
-        normalized_heading = re.sub(
-            r"^\s*(?:\d+(?:\.\d+)*|[IVX]+)[\s.)-]+", "", stripped, flags=re.IGNORECASE
-        ).strip(" .:").lower()
-        looks_like_heading = bool(match) and (
-            normalized_heading in _COMMON_SECTION_NAMES
-            or (len(stripped) < 60 and stripped.isupper())
-        )
-        if looks_like_heading:
-            current_section = stripped
-            sections.setdefault(current_section, [])
-        else:
-            sections[current_section].append(stripped)
+        plain = _plain_heading(stripped)
+        match = _NUMBERED_HEADING_RE.match(stripped)
+
+        if plain in _COMMON_SECTION_NAMES and len(stripped) <= 60 and stripped[0].isupper() and (
+            match or stripped.lower().strip(" .:") == plain
+        ):
+            if match and match.group("num").isdigit():
+                last_top = int(match.group("num"))
+            in_references = in_references or plain in {"references", "bibliography", "works cited", "literature cited"}
+            start(stripped)
+            continue
+
+        if match and _heading_title_ok(match.group("title")):
+            num = match.group("num")
+            has_dot = stripped[len(num)] == "."
+            if in_references and "." not in num and not num.isalpha():
+                pass  # numbered entries of the reference list
+            elif num.isdigit() or num in _ROMAN and num != "I" or num == "I" and last_top == 0:
+                value = int(num) if num.isdigit() else _ROMAN[num]
+                if value == last_top + 1 and value <= 30 and dotted in (None, has_dot):
+                    dotted = has_dot
+                    last_top = value
+                    start(stripped)
+                    continue
+            elif "." in num:
+                top, rest = num.split(".", 1)
+                if int(top) == last_top and num not in sub_seen:
+                    sub_seen.add(num)
+                    outline.append(f"  {stripped}")
+            elif len(num) == 1 and num.isalpha() and last_top and len(match.group("title").split()) >= 2:
+                expected = chr(ord(last_letter) + 1) if last_letter else "A"
+                if num == expected and any("reference" in s.lower() or "bibliograph" in s.lower() for s in sections):
+                    last_letter = num
+                    start(stripped)
+                    continue
+        sections[current].append(stripped)
 
     return {
         "sections": {name: "\n".join(content) for name, content in sections.items()},
         "section_order": list(sections.keys()),
+        "outline": outline,
         "word_count": len(raw_text.split()),
     }
 
@@ -377,6 +472,9 @@ def parse_file(filename: str, file_bytes: bytes) -> ParsedPaper:
             f"Unsupported file type for '{filename}'. Only PDF and DOCX are accepted."
         )
 
+    # Ligatures ("ﬁ") and other presentation forms would stop "filtering"
+    # matching "ﬁltering" in search and headings.
+    raw_text = unicodedata.normalize("NFKC", raw_text or "")
     if not raw_text or len(raw_text.split()) < 20:
         return ParsedPaper(raw_text=raw_text, structure={}, status="empty_text")
 

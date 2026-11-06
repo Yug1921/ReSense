@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Hide the Next.js dev badge (bottom-left "N") so screens look finished in demos.
+  devIndicators: false,
 };
 
 export default nextConfig;

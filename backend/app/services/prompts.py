@@ -313,32 +313,83 @@ def build_figure_table_prompt(
 
 
 _ASK_SYSTEM_PROMPT = (
-    "You are a precise research-paper assistant. You answer questions using "
-    "ONLY the excerpts of the paper provided below — never your own outside "
-    "knowledge. If the excerpts don't contain the answer, say plainly that "
-    "the paper doesn't appear to cover that, rather than guessing. Be "
-    "concise and accurate. When helpful, mention which section an answer "
-    "came from (e.g. 'According to the Methodology section...')."
+    "You are ReSense, a friendly expert who has read the research paper given to you "
+    "and helps someone understand it, the way a good tutor or ChatGPT would.\n\n"
+    "How to answer:\n"
+    "- Answer exactly the question asked, first, in plain language. Then add the detail "
+    "that helps: key numbers, names, definitions, and why it matters.\n"
+    "- Use only the paper text you are given. Never invent results, numbers, citations "
+    "or claims. Don't fill gaps with outside knowledge; if you add general background, "
+    "say clearly that it isn't from the paper.\n"
+    "- If the paper text you have doesn't answer the question, say so honestly in one "
+    "sentence, then share what the paper does say that is closest.\n"
+    "- When the question is about the paper's structure (its sections, parts or "
+    "aspects), use the outline.\n"
+    "- Mention where things come from in plain words, e.g. (Section 4.3, Coverage).\n"
+    "- Format with Markdown: short paragraphs, bullet or numbered lists for several "
+    "items, **bold** for key terms. Match length to the question: a sentence or two "
+    "for a simple fact, more for a broad question. No preamble such as 'Great question'.\n"
+    "- Write only the answer for the reader, inside <answer> and </answer>. Never write "
+    "your reasoning, notes about the user, or what you are going to do."
 )
 
 
+def _ask_history(chat_history: list[dict]) -> str:
+    if not chat_history:
+        return ""
+    lines = [
+        f"{'Reader' if turn['role'] == 'user' else 'You'}: {re.sub(r'\s+', ' ', turn['content'])[:600]}"
+        for turn in chat_history
+    ]
+    return "Conversation so far (for follow-up questions):\n" + "\n".join(lines) + "\n\n"
+
+
 def build_ask_prompt(
-    question: str, retrieved_chunks: list[dict], chat_history: list[dict]
+    question: str,
+    retrieved_chunks: list[dict],
+    chat_history: list[dict],
+    outline: list[str] | None = None,
+    title: str = "",
 ) -> tuple[str, str]:
+    """Prompt with the most relevant passages (for models with small limits)."""
     context_blocks = "\n\n".join(
-        f"[Excerpt from '{c['section']}']\n{c['text']}" for c in retrieved_chunks
+        f"[Passage {i} | {c['section']}]\n{c['text']}" for i, c in enumerate(retrieved_chunks, 1)
     )
-
-    history_text = ""
-    if chat_history:
-        history_lines = [f"{turn['role']}: {turn['content']}" for turn in chat_history]
-        history_text = "Recent conversation so far:\n" + "\n".join(history_lines) + "\n\n"
-
+    outline_text = "\n".join(outline or [])
     user_prompt = (
-        f"Relevant excerpts from the paper:\n\n{context_blocks}\n\n"
-        f"{history_text}"
-        f"Question: {question}\n\n"
-        "Answer using only the excerpts above."
+        (f"Paper: {title}\n\n" if title else "")
+        + (f"The paper's outline (its headings, in order):\n{outline_text}\n\n" if outline_text else "")
+        + f"Passages from the paper most related to the question:\n\n{context_blocks}\n\n"
+        + _ask_history(chat_history)
+        + f"Question: {question}"
+    )
+    return _ASK_SYSTEM_PROMPT, user_prompt
+
+
+def build_ask_full_paper_prompt(
+    question: str,
+    sections: dict[str, str],
+    chat_history: list[dict],
+    outline: list[str] | None = None,
+    title: str = "",
+    extras: list[dict] | None = None,
+    max_chars: int = 400_000,
+) -> tuple[str, str]:
+    """Prompt with the whole paper, for long-context models such as Gemini."""
+    parts = []
+    for name, text in sections.items():
+        heading = "Opening page (title, authors, abstract)" if name == "preamble" else name
+        parts.append(f"## {heading}\n{text}")
+    for extra in extras or []:
+        parts.append(f"## {extra['section']}\n{extra['text']}")
+    paper = "\n\n".join(parts)[:max_chars]
+    outline_text = "\n".join(outline or [])
+    user_prompt = (
+        (f"Paper: {title}\n\n" if title else "")
+        + (f"The paper's outline (its headings, in order):\n{outline_text}\n\n" if outline_text else "")
+        + f"The full paper text:\n\n{paper}\n\n"
+        + _ask_history(chat_history)
+        + f"Question: {question}"
     )
     return _ASK_SYSTEM_PROMPT, user_prompt
 
