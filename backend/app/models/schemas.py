@@ -142,6 +142,15 @@ class FiguresResponse(BaseModel):
 
 # --- Reference integrity ----------------------------------------------------
 
+class ReferenceNotice(BaseModel):
+    """An editorial notice on a cited paper (retraction, correction, ...)."""
+    type: str
+    label: str
+    date: Optional[str] = None
+    notice_doi: Optional[str] = None
+    source: Optional[str] = None
+
+
 class ReferenceItem(BaseModel):
     index: int
     raw: str
@@ -161,6 +170,7 @@ class ReferenceItem(BaseModel):
     cited_title: Optional[str] = None
     cited_authors: Optional[str] = None
     cited_venue: Optional[str] = None
+    notices: list[ReferenceNotice] = Field(default_factory=list)
 
 
 class ReferenceCheckRequest(BaseModel):
@@ -178,3 +188,67 @@ class ReferenceCheckResponse(BaseModel):
     items: list[ReferenceItem]
     cached: bool
     checked_at: Optional[str] = None
+    # Retraction alert: cited works with a retraction, withdrawal or expression
+    # of concern, and those with only a correction.
+    retracted: int = 0
+    corrected: int = 0
+    notices_checked: bool = False
+
+class IntegrityRequest(BaseModel):
+    paper_id: str
+    force: bool = False
+
+
+class LinkItem(BaseModel):
+    url: str
+    where: Literal["body", "references"]
+    context: str = ""
+    status: Literal["working", "broken", "unconfirmed", "skipped"]
+    code: Optional[int] = None
+    note: str = ""
+    final_url: Optional[str] = None
+
+
+class AvailabilityStatement(BaseModel):
+    kind: Literal["on_request", "public"]
+    text: str
+
+
+class LinkCheckResponse(BaseModel):
+    paper_id: str
+    total: int
+    working: int
+    broken: int
+    unconfirmed: int
+    links: list[LinkItem]
+    statements: list[AvailabilityStatement]
+    checked_at: Optional[str] = None
+    cached: bool = False
+
+
+ClaimVerdict = Literal["supported", "partial", "not_supported", "cannot_tell", "unchecked"]
+
+
+class ClaimItem(BaseModel):
+    ref: int
+    sentence: str
+    verdict: ClaimVerdict
+    reason: str = ""
+    cited_title: Optional[str] = None
+    source_title: Optional[str] = None
+    abstract_source: Optional[str] = None
+
+
+class ClaimCheckResponse(BaseModel):
+    paper_id: str
+    total: int
+    supported: int
+    partial: int
+    not_supported: int
+    cannot_tell: int
+    unchecked: int
+    claims: list[ClaimItem]
+    citing_sentences: int = 0  # sentences in the paper that cite a reference
+    without_abstract: int = 0  # cited references we found no abstract for
+    checked_at: Optional[str] = None
+    cached: bool = False

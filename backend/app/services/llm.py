@@ -94,17 +94,19 @@ _GONE_HINTS = ("not found", "does not exist", "decommissioned", "deprecated", "n
     reraise=True,
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=1, min=1, max=6),
-    retry=retry_if_exception_type((httpx.TransportError, LLMProviderUnavailableError)),
+    # A model that timed out is not retried: the next model is a better bet.
+    retry=retry_if_exception_type((httpx.ConnectError, httpx.RemoteProtocolError, LLMProviderUnavailableError)),
 )
 async def _post_chat_completion(
     payload: dict,
     base_url: str | None = None,
     api_key: str | None = None,
+    timeout: float = 60.0,
 ) -> dict:
     base_url = base_url or settings.openrouter_base_url
     api_key = api_key or settings.openrouter_api_key
     # Long papers take a while to summarize; a short timeout cut them off.
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             f"{base_url}/chat/completions",
             headers={
@@ -147,6 +149,7 @@ async def call_openrouter(
     max_tokens: int = 900,
     temperature: float = 0.4,
     long_context_user_prompt: str | None = None,
+    timeout: float = 60.0,
 ) -> str:
     """
     Ask the best available free model, falling through the ranked list
@@ -194,7 +197,7 @@ async def call_openrouter(
             **providers.request_options(candidate),
         }
         try:
-            data = await _post_chat_completion(payload, candidate.base_url, candidate.api_key)
+            data = await _post_chat_completion(payload, candidate.base_url, candidate.api_key, timeout=timeout)
             try:
                 content = _strip_leaked_reasoning(data["choices"][0]["message"]["content"] or "")
             except LeakedReasoningError as exc:
@@ -208,7 +211,7 @@ async def call_openrouter(
             seconds = _rest_seconds(exc)
             if seconds:
                 providers.rest(candidate, seconds)
-            logger.warning("AI model %s failed, trying the next one: %s", candidate.key, exc)
+            logger.warning("AI model %s failed, trying the next one: %s: %s", candidate.key, type(exc).__name__, exc)
 
     if rate_limited == len(candidates):
         raise LLMRateLimitError("Every free AI model is at its limit right now. Try again in a minute.")

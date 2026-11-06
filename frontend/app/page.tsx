@@ -15,7 +15,7 @@ import { PapersList } from "@/components/home/papers-list";
 const STEPS = [
   { title: "Upload", text: "We read the text and its sections" },
   { title: "Read it your way", text: "Summaries in five tones, and answers" },
-  { title: "Check references", text: "Matched against Crossref, OpenAlex and arXiv" },
+  { title: "Check its integrity", text: "References, retractions, cited claims and links" },
 ];
 
 function Home() {

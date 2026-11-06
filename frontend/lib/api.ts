@@ -263,6 +263,16 @@ export interface ReferenceItem {
   cited_title: string | null;
   cited_authors: string | null;
   cited_venue: string | null;
+  // Retraction alert: editorial notices on the cited work, most serious first.
+  notices?: ReferenceNotice[];
+}
+
+export interface ReferenceNotice {
+  type: string; // retraction | withdrawal | removal | expression_of_concern | correction | erratum | corrigendum
+  label: string;
+  date: string | null;
+  notice_doi: string | null;
+  source: string | null;
 }
 
 export interface ReferenceCheckResponse {
@@ -275,6 +285,9 @@ export interface ReferenceCheckResponse {
   items: ReferenceItem[];
   cached: boolean;
   checked_at: string | null;
+  retracted?: number;
+  corrected?: number;
+  notices_checked?: boolean;
 }
 
 /** The last saved reference check, or null if this paper was never checked. */
@@ -287,6 +300,73 @@ export async function getSavedReferenceCheck(paperId: string): Promise<Reference
 
 export function checkReferences(paperId: string, force = false): Promise<ReferenceCheckResponse> {
   return postJson<ReferenceCheckResponse>("/integrity/references", { paper_id: paperId, force });
+}
+
+export type LinkStatus = "working" | "broken" | "unconfirmed" | "skipped";
+
+export interface LinkItem {
+  url: string;
+  where: "body" | "references";
+  context: string;
+  status: LinkStatus;
+  code: number | null;
+  note: string;
+  final_url: string | null;
+}
+
+export interface LinkCheckResponse {
+  paper_id: string;
+  total: number;
+  working: number;
+  broken: number;
+  unconfirmed: number;
+  links: LinkItem[];
+  statements: { kind: "on_request" | "public"; text: string }[];
+  checked_at: string | null;
+  cached: boolean;
+}
+
+export async function getSavedLinkCheck(paperId: string): Promise<LinkCheckResponse | null> {
+  return (await getJson<LinkCheckResponse | undefined>(`/integrity/links/${encodeURIComponent(paperId)}`)) ?? null;
+}
+
+export function checkLinks(paperId: string, force = false): Promise<LinkCheckResponse> {
+  return postJson<LinkCheckResponse>("/integrity/links", { paper_id: paperId, force });
+}
+
+export type ClaimVerdict = "supported" | "partial" | "not_supported" | "cannot_tell" | "unchecked";
+
+export interface ClaimItem {
+  ref: number;
+  sentence: string;
+  verdict: ClaimVerdict;
+  reason: string;
+  cited_title: string | null;
+  source_title: string | null;
+  abstract_source: string | null;
+}
+
+export interface ClaimCheckResponse {
+  paper_id: string;
+  total: number;
+  supported: number;
+  partial: number;
+  not_supported: number;
+  cannot_tell: number;
+  unchecked: number;
+  claims: ClaimItem[];
+  citing_sentences: number;
+  without_abstract: number;
+  checked_at: string | null;
+  cached: boolean;
+}
+
+export async function getSavedClaimCheck(paperId: string): Promise<ClaimCheckResponse | null> {
+  return (await getJson<ClaimCheckResponse | undefined>(`/integrity/claims/${encodeURIComponent(paperId)}`)) ?? null;
+}
+
+export function checkClaims(paperId: string, force = false): Promise<ClaimCheckResponse> {
+  return postJson<ClaimCheckResponse>("/integrity/claims", { paper_id: paperId, force });
 }
 
 export type DownloadFormat = "pdf" | "docx";

@@ -115,7 +115,7 @@ class IntegrityRouterTests(unittest.TestCase):
         cached_items = [{"index": 1, "raw": "a", "status": "not_found", "similarity": 0.1}]
         db = _FakeSupabase({
             "papers": [_paper()],
-            "integrity_reports": [{"paper_id": "p1", "report_json": {"items": cached_items}}],
+            "integrity_reports": [{"paper_id": "p1", "report_json": {"items": cached_items, "notices_checked": True}}],
         })
 
         async def fail_verify_all(refs, mailto, **_):

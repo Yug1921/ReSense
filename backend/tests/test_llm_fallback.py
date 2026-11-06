@@ -74,7 +74,7 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
         self.calls = []
 
     def _respond(self, behaviour):
-        async def fake_post(payload, base_url=None, api_key=None):
+        async def fake_post(payload, base_url=None, api_key=None, timeout=None):
             self.calls.append(payload["model"])
             result = behaviour(payload["model"])
             if isinstance(result, Exception):
@@ -125,7 +125,7 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_reasoning_settings_only_where_supported(self):
         payloads = []
 
-        async def fake_post(payload, base_url=None, api_key=None):
+        async def fake_post(payload, base_url=None, api_key=None, timeout=None):
             payloads.append(payload)
             raise llm.LLMRequestError("down")
 
@@ -168,7 +168,7 @@ class AnswerCleanupTests(FallbackTests):
     async def test_long_prompt_goes_to_gemini_only(self):
         sent = []
 
-        async def fake_post(payload, base_url=None, api_key=None):
+        async def fake_post(payload, base_url=None, api_key=None, timeout=None):
             sent.append((payload["model"], payload["messages"][1]["content"]))
             if payload["model"].startswith("gemini"):
                 raise llm.LLMProviderUnavailableError("503")
